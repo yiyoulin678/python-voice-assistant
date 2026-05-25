@@ -30,6 +30,9 @@ python run_demo.py session --text "什么是死锁？"
 # 有麦克风：完整语音链路
 python run_demo.py session --seconds 5
 
+# 查看本机录音设备（系统默认输入）
+python run_demo.py devices
+
 # 查看帮助
 python run_demo.py --help
 ```

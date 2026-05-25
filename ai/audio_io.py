@@ -89,9 +89,60 @@ def _new_recording_path() -> Path:
     return RECORDINGS_DIR / name
 
 
+def list_input_devices() -> list[dict]:
+    """列出可用于录音的输入设备（供 CLI / GUI 展示）。"""
+    try:
+        all_devices = sd.query_devices()
+        default_in, _ = sd.default.device
+    except Exception as exc:
+        raise AudioIOError(f"查询音频设备失败: {exc}") from exc
+
+    inputs: list[dict] = []
+    for index, dev in enumerate(all_devices):
+        max_in = int(dev.get("max_input_channels", 0))
+        if max_in < 1:
+            continue
+        inputs.append(
+            {
+                "index": index,
+                "name": dev.get("name", "Unknown"),
+                "max_input_channels": max_in,
+                "default_samplerate": dev.get("default_samplerate"),
+                "is_default": index == default_in,
+            }
+        )
+    return inputs
+
+
+def format_devices_text(devices: list[dict] | None = None) -> str:
+    """将输入设备格式化为可读文本。"""
+    devices = devices if devices is not None else list_input_devices()
+    if not devices:
+        return "未找到可用的录音输入设备。请在系统「声音 → 输入」中检查麦克风。"
+
+    lines = ["可用录音设备（录音模块使用系统默认输入）：", ""]
+    for d in devices:
+        mark = " [默认]" if d.get("is_default") else ""
+        rate = d.get("default_samplerate")
+        rate_s = f", {int(rate)} Hz" if rate else ""
+        lines.append(
+            f"  [{d['index']}] {d['name']} "
+            f"(输入声道: {d['max_input_channels']}{rate_s}){mark}"
+        )
+    lines.append("")
+    lines.append("切换设备：Windows 设置 → 系统 → 声音 → 输入 → 选择默认设备。")
+    return "\n".join(lines)
+
+
 def _check_input_device() -> None:
     try:
-        sd.query_devices(kind="input")
+        devices = list_input_devices()
+        if not devices:
+            raise AudioIOError(
+                "未检测到可用麦克风，请检查系统录音设备与权限。"
+            )
+    except AudioIOError:
+        raise
     except Exception as exc:
         raise AudioIOError(
             "未检测到可用麦克风，请检查系统录音设备与权限。"
