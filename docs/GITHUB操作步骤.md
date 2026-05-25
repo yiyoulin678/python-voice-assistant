@@ -2,12 +2,13 @@
 
 仓库：https://github.com/Mut5uki/python-voice-assistant
 
-本地已准备好两个分支：
+**已完成（2026-05-20）：**
 
-| 分支 | 说明 |
-|------|------|
-| `main` | 初始课设代码 |
-| `feature/list-audio-devices` | Issue #1 对应功能（`devices` 命令） |
+| 项 | 链接 |
+|----|------|
+| Issue #1 | https://github.com/Mut5uki/python-voice-assistant/issues/1 |
+| PR #2（已合并） | https://github.com/Mut5uki/python-voice-assistant/pull/2 |
+| 仓库 | https://github.com/Mut5uki/python-voice-assistant |
 
 ---
 
