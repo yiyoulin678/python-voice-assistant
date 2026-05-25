@@ -38,6 +38,9 @@ python -m ai.demo_cli ask --text "什么是死锁？" --speak
 ```bash
 cd VoiceAssistant
 
+# 查看录音输入设备
+python run_demo.py devices
+
 # 阶段1：录音与播放
 python -m ai.demo_cli record --seconds 5 --play
 

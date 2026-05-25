@@ -129,6 +129,15 @@ def cmd_session(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_devices(args: argparse.Namespace) -> int:
+    try:
+        print(audio_io.format_devices_text())
+        return 0
+    except audio_io.AudioIOError as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_play(args: argparse.Namespace) -> int:
     try:
         audio_io.play_wav(args.path)
@@ -142,6 +151,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="VoiceAssistant AI 模块 CLI")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_dev = sub.add_parser("devices", help="列出系统录音输入设备")
+    p_dev.set_defaults(func=cmd_devices)
 
     p_rec = sub.add_parser("record", help="录音并保存 wav")
     p_rec.add_argument(
