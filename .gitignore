@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+models/*
+!models/.gitkeep
+
+resources/recordings/*
+!resources/recordings/.gitkeep
+
+*.wav
+!resources/demo_question.wav
