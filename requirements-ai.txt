@@ -13,3 +13,6 @@ sentencepiece>=0.1.99
 
 # 阶段4+
 pyttsx3>=2.90
+
+# GUI
+PyQt5>=5.15

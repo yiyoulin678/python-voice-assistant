@@ -1,12 +1,13 @@
 # python-voice-assistant
 
-基于 Python 的智能语音学习助手（课程设计）— AI 与音频模块。
+基于 Python 的**语音 AI 虚拟女友**（课程设计）。
 
 ## 功能
 
+- **PyQt5 图形界面**：登录、聊天气泡、文字/语音输入
 - 语音录制与播放（sounddevice）
 - 语音识别（OpenAI Whisper，本地）
-- 文本智能处理（知识库 + transformers 抽取式问答）
+- 文本智能处理（知识库 + transformers）
 - 语音播报（pyttsx3）
 - 命令行端到端演示
 
@@ -21,29 +22,32 @@ pip install -r requirements-ai.txt
 
 ## 快速运行
 
-**必须先在本仓库根目录执行**（存在 `ai/` 包）：
+### GUI（推荐）
 
 ```bash
-# 无麦克风：文字演示（推荐）
-python run_demo.py session --text "什么是死锁？"
-
-# 有麦克风：完整语音链路
-python run_demo.py session --seconds 5
-
-# 查看本机录音设备（系统默认输入）
-python run_demo.py devices
-
-# 查看帮助
-python run_demo.py --help
+pip install -r requirements-ai.txt
+python main.py
 ```
 
-Windows 可双击 `run_demo.bat`。
+或双击 `run_gui.bat`。无麦克风时用底部文字框发送即可。
+
+### 命令行
+
+```bash
+python run_demo.py session --text "你好"
+python run_demo.py session --seconds 5
+python run_demo.py devices
+```
+
+Windows CLI：双击 `run_demo.bat`。
 
 更多说明见 [ai/README.md](ai/README.md)。
 
 ## 目录结构
 
 ```text
+main.py             # GUI 入口
+ui/                 # PyQt5 界面
 ai/                 # 核心模块
   audio_io.py       # 录音/播放
   speech_to_text.py # Whisper

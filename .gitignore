@@ -64,6 +64,9 @@ venv.bak/
 # .idea/
 
 # --- 本项目 ---
+logs/
+data/
+
 models/*
 !models/.gitkeep
 
