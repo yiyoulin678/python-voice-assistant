@@ -5,10 +5,10 @@
 ## 功能
 
 - **PyQt5 图形界面**：登录、聊天气泡、文字/语音输入
-- 语音录制与播放（sounddevice）
-- 语音识别（OpenAI Whisper，本地）
-- 文本智能处理（知识库 + transformers）
-- 语音播报（pyttsx3）
+- **本地对话**：Ollama + `qwen2.5:3b`（虚拟女友人设）
+- **声音克隆**：阿里 CosyVoice（参考 `reference.wav`）
+- 语音识别（Whisper）
+- 语音播报（CosyVoice 优先，pyttsx3 兜底）
 - 命令行端到端演示
 
 ## 环境
@@ -26,10 +26,12 @@ pip install -r requirements-ai.txt
 
 ```bash
 pip install -r requirements-ai.txt
+ollama pull qwen2.5:3b    # 本地大模型（对话）
+python scripts/check_ollama.py
 python main.py
 ```
 
-或双击 `run_gui.bat`。无麦克风时用底部文字框发送即可。
+或双击 `run_gui.bat`。CosyVoice 安装见 [docs/SETUP_LLM_TTS.md](docs/SETUP_LLM_TTS.md)。
 
 ### 命令行
 
@@ -46,18 +48,19 @@ Windows CLI：双击 `run_demo.bat`。
 ## 目录结构
 
 ```text
-main.py             # GUI 入口
+main.py
+config/             # 人设 persona_default.json、ai_settings.json
 ui/                 # PyQt5 界面
-ai/                 # 核心模块
-  audio_io.py       # 录音/播放
-  speech_to_text.py # Whisper
-  text_process.py   # 文本处理
-  text_to_speech.py # TTS
-  pipeline.py       # 流程编排
-  demo_cli.py       # CLI 入口
-models/             # 模型缓存（不提交）
-resources/          # 录音文件（不提交）
-docs/               # 文档与实验报告
+ai/
+  llm/              # Ollama 对话 + 规则兜底
+  tts/              # CosyVoice + pyttsx3
+  audio_io.py
+  speech_to_text.py
+  pipeline.py
+scripts/            # check_ollama、cosyvoice_speak
+third_party/        # CosyVoice 源码（需 clone）
+resources/voice_ref/  # reference.wav 参考音色
+docs/SETUP_LLM_TTS.md
 ```
 
 ## 分工
