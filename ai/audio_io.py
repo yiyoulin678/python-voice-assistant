@@ -13,7 +13,9 @@ import sounddevice as sd
 from scipy.io import wavfile
 
 from ai.config import (
+    AUDIO_DEVICES_PATH,
     CHANNELS,
+    CONFIG_DIR,
     DTYPE,
     RECORDINGS_DIR,
     SAMPLE_RATE,
@@ -26,6 +28,8 @@ _lock = threading.Lock()
 _recording = False
 _stream: sd.InputStream | None = None
 _frames: list[np.ndarray] = []
+_input_device: int | None = None
+_output_device: int | None = None
 
 
 class AudioIOError(Exception):
@@ -89,29 +93,136 @@ def _new_recording_path() -> Path:
     return RECORDINGS_DIR / name
 
 
-def list_input_devices() -> list[dict]:
-    """列出可用于录音的输入设备（供 CLI / GUI 展示）。"""
+def _enumerate_devices(kind: str) -> list[dict]:
+    """kind: 'input' | 'output'"""
     try:
         all_devices = sd.query_devices()
-        default_in, _ = sd.default.device
+        default_in, default_out = sd.default.device
     except Exception as exc:
         raise AudioIOError(f"查询音频设备失败: {exc}") from exc
 
-    inputs: list[dict] = []
+    result: list[dict] = []
     for index, dev in enumerate(all_devices):
-        max_in = int(dev.get("max_input_channels", 0))
-        if max_in < 1:
+        if kind == "input":
+            channels = int(dev.get("max_input_channels", 0))
+            is_default = index == default_in
+        else:
+            channels = int(dev.get("max_output_channels", 0))
+            is_default = index == default_out
+        if channels < 1:
             continue
-        inputs.append(
+        result.append(
             {
                 "index": index,
                 "name": dev.get("name", "Unknown"),
-                "max_input_channels": max_in,
+                "channels": channels,
                 "default_samplerate": dev.get("default_samplerate"),
-                "is_default": index == default_in,
+                "is_default": is_default,
             }
         )
-    return inputs
+    return result
+
+
+def list_input_devices() -> list[dict]:
+    """列出可用于录音的输入设备（供 CLI / GUI 展示）。"""
+    devices = _enumerate_devices("input")
+    for d in devices:
+        d["max_input_channels"] = d["channels"]
+    return devices
+
+
+def list_output_devices() -> list[dict]:
+    """列出可用于播放的输出设备。"""
+    devices = _enumerate_devices("output")
+    for d in devices:
+        d["max_output_channels"] = d["channels"]
+    return devices
+
+
+def get_input_device() -> int | None:
+    with _lock:
+        return _input_device
+
+
+def get_output_device() -> int | None:
+    with _lock:
+        return _output_device
+
+
+def set_input_device(index: int | None) -> None:
+    """None 表示系统默认输入。"""
+    global _input_device
+    if index is not None:
+        _validate_device_index(index, "input")
+    with _lock:
+        _input_device = index
+    save_device_settings()
+
+
+def set_output_device(index: int | None) -> None:
+    global _output_device
+    if index is not None:
+        _validate_device_index(index, "output")
+    with _lock:
+        _output_device = index
+    save_device_settings()
+
+
+def _validate_device_index(index: int, kind: str) -> None:
+    devices = list_input_devices() if kind == "input" else list_output_devices()
+    if not any(d["index"] == index for d in devices):
+        raise AudioIOError(f"无效的{'输入' if kind == 'input' else '输出'}设备编号: {index}")
+
+
+def load_device_settings() -> None:
+    global _input_device, _output_device
+    path = AUDIO_DEVICES_PATH
+    if not path.is_file():
+        return
+    try:
+        import json
+
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        logger.warning("读取音频设备配置失败: %s", exc)
+        return
+    inp = data.get("input_device_index")
+    out = data.get("output_device_index")
+    with _lock:
+        _input_device = None
+        _output_device = None
+        if inp is not None:
+            try:
+                idx = int(inp)
+                _validate_device_index(idx, "input")
+                _input_device = idx
+            except (AudioIOError, TypeError, ValueError) as exc:
+                logger.warning("输入设备配置无效，使用系统默认: %s", exc)
+        if out is not None:
+            try:
+                idx = int(out)
+                _validate_device_index(idx, "output")
+                _output_device = idx
+            except (AudioIOError, TypeError, ValueError) as exc:
+                logger.warning("输出设备配置无效，使用系统默认: %s", exc)
+
+
+def save_device_settings() -> None:
+    import json
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    data = {
+        "input_device_index": get_input_device(),
+        "output_device_index": get_output_device(),
+    }
+    with AUDIO_DEVICES_PATH.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def device_combo_label(dev: dict) -> str:
+    mark = " ★" if dev.get("is_default") else ""
+    return f"[{dev['index']}] {dev['name']}{mark}"
 
 
 def format_devices_text(devices: list[dict] | None = None) -> str:
@@ -130,7 +241,7 @@ def format_devices_text(devices: list[dict] | None = None) -> str:
             f"(输入声道: {d['max_input_channels']}{rate_s}){mark}"
         )
     lines.append("")
-    lines.append("切换设备：Windows 设置 → 系统 → 声音 → 输入 → 选择默认设备。")
+    lines.append("也可在小音 GUI 顶栏下方选择「麦克风 / 播放设备」。")
     return "\n".join(lines)
 
 
@@ -154,11 +265,27 @@ def is_recording() -> bool:
         return _recording
 
 
+def _check_input_settings(device: int | None) -> None:
+    try:
+        sd.check_input_settings(
+            device=device,
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=DTYPE,
+        )
+    except Exception as exc:
+        raise AudioIOError(
+            f"当前麦克风不支持 {SAMPLE_RATE}Hz 单声道录音，请换一个设备或选「系统默认」: {exc}"
+        ) from exc
+
+
 def start_recording() -> None:
-    """开始录音（需调用 stop_recording 结束）。"""
+    """开始录音（需调用 stop_recording 结束）。勿在 GUI 主线程直接调用。"""
     global _recording, _stream, _frames
 
     _check_input_device()
+    device = get_input_device()
+    _check_input_settings(device)
 
     with _lock:
         if _recording:
@@ -166,26 +293,38 @@ def start_recording() -> None:
         _frames = []
         _recording = True
 
-        def callback(indata, frames, time_info, status):
-            if status:
-                logger.warning("录音流状态: %s", status)
-            _frames.append(indata.copy())
+    def callback(indata, _frames_count, _time_info, status):
+        if status:
+            logger.warning("录音流状态: %s", status)
+        with _lock:
+            if _recording:
+                _frames.append(indata.copy())
 
-        try:
-            _stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                callback=callback,
-            )
-            _stream.start()
-        except Exception as exc:
+    stream: sd.InputStream | None = None
+    try:
+        stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=DTYPE,
+            device=device,
+            callback=callback,
+        )
+        stream.start()
+    except Exception as exc:
+        with _lock:
             _recording = False
             _stream = None
             _frames = []
-            raise AudioIOError(f"启动录音失败: {exc}") from exc
+        raise AudioIOError(f"启动录音失败: {exc}") from exc
 
-    logger.info("开始录音 @ %s Hz", SAMPLE_RATE)
+    with _lock:
+        _stream = stream
+
+    logger.info(
+        "开始录音 @ %s Hz device=%s",
+        SAMPLE_RATE,
+        device if device is not None else "default",
+    )
 
 
 def stop_recording() -> str:
@@ -237,6 +376,7 @@ def record_for_seconds(seconds: float) -> str:
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype=DTYPE,
+            device=get_input_device(),
         )
         sd.wait()
     except Exception as exc:
@@ -278,9 +418,16 @@ def play_wav(wav_path: str) -> None:
         samples = samples.mean(axis=1)
 
     try:
-        sd.play(samples, rate)
+        sd.play(samples, rate, device=get_output_device())
         sd.wait()
     except Exception as exc:
         raise AudioIOError(f"播放失败: {exc}") from exc
 
-    logger.info("播放完成: %s", path)
+    logger.info(
+        "播放完成: %s (device=%s)",
+        path,
+        get_output_device() if get_output_device() is not None else "default",
+    )
+
+
+load_device_settings()

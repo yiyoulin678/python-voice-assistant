@@ -20,13 +20,21 @@ class VoiceSessionResult:
     reply_audio_path: str | None = None
 
 
-def preload_all(whisper_model: str | None = None) -> None:
-    """预加载 Whisper 与 NLP（TTS 按需初始化）。"""
+def preload_all(whisper_model: str | None = None) -> tuple[str, str]:
+    """预加载 Whisper / 对话 / TTS。返回 (对话状态, 播报状态)。"""
     from ai.config import WHISPER_MODEL_NAME
+    from ai.llm import ollama_client
+    from ai.tts.speaker import get_tts_backend_name, get_tts_status_label
 
     name = whisper_model or WHISPER_MODEL_NAME
     speech_to_text.preload_whisper(name)
     text_process.preload_nlp()
+    llm_label = ollama_client.get_status_label()
+
+    backend = get_tts_backend_name()
+    tts_label = get_tts_status_label()
+    logger.info("对话: %s | TTS: %s (%s)", llm_label, backend, tts_label)
+    return llm_label, tts_label
 
 
 def run_from_wav(

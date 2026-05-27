@@ -66,6 +66,13 @@ venv.bak/
 # --- 本项目 ---
 logs/
 data/
+third_party/CosyVoice/
+third_party/ollama/
+third_party/**/pretrained_models/
+
+resources/voice_ref/*
+!resources/voice_ref/.gitkeep
+!resources/voice_ref/README.md
 
 models/*
 !models/.gitkeep

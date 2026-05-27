@@ -16,3 +16,13 @@ pyttsx3>=2.90
 
 # GUI
 PyQt5>=5.15
+
+# LLM / 网络
+requests>=2.28
+
+# Qwen3-TTS（推荐，内置女声 / 可选克隆）
+qwen-tts>=0.1.0
+soundfile>=0.12.1
+
+# CosyVoice 中文文本前端
+wetext>=0.0.9
