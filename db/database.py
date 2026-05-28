@@ -57,3 +57,33 @@ class DatabaseManager:
             log_error(f"用户注册失败: {e}")
 
             return False
+        
+        # 用户登录验证
+    def check_login(self, username, password):
+
+        try:
+
+            self.cursor.execute("""
+            SELECT * FROM users
+            WHERE username = ? AND password = ?
+            """, (username, password))
+
+            user = self.cursor.fetchone()
+
+            if user:
+
+                log_info(f"用户登录成功: {username}")
+
+                return True
+
+            else:
+
+                log_error(f"用户登录失败: 用户名或密码错误")
+
+                return False
+
+        except Exception as e:
+
+            log_error(f"登录验证异常: {e}")
+
+            return False
