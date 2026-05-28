@@ -113,3 +113,27 @@ class DatabaseManager:
             log_error(f"聊天记录保存失败: {e}")
 
             return False
+        
+        # 获取聊天记录
+    def get_history(self, user_id):
+
+        try:
+
+            self.cursor.execute("""
+            SELECT speech_text, ai_response, create_time
+            FROM history
+            WHERE user_id = ?
+            ORDER BY id ASC
+            """, (user_id,))
+
+            history = self.cursor.fetchall()
+
+            log_info(f"获取用户 {user_id} 聊天记录成功")
+
+            return history
+
+        except Exception as e:
+
+            log_error(f"获取聊天记录失败: {e}")
+
+            return []
