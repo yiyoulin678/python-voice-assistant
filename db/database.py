@@ -87,3 +87,29 @@ class DatabaseManager:
             log_error(f"登录验证异常: {e}")
 
             return False
+        
+        # 保存聊天记录
+    def save_history(self, user_id, speech_text, ai_response):
+
+        try:
+
+            self.cursor.execute("""
+            INSERT INTO history (
+                user_id,
+                speech_text,
+                ai_response
+            )
+            VALUES (?, ?, ?)
+            """, (user_id, speech_text, ai_response))
+
+            self.conn.commit()
+
+            log_info("聊天记录保存成功")
+
+            return True
+
+        except Exception as e:
+
+            log_error(f"聊天记录保存失败: {e}")
+
+            return False

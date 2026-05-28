@@ -4,10 +4,15 @@ db = DatabaseManager()
 
 db.create_tables()
 
-# 注册测试
+# 注册
 db.register_user("test_user", "123456")
 
-# 登录测试
-result = db.check_login("test_user", "wrong")
+# 登录
+print(db.check_login("test_user", "123456"))
 
-print(result)
+# 保存历史记录
+print(db.save_history(
+    1,
+    "你好",
+    "你好，我是AI助手"
+))
