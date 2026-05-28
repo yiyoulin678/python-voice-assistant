@@ -1,7 +1,8 @@
 import sqlite3
-
+from datetime import datetime
 from utils.config import DATABASE_PATH
 from utils.logger import log_info, log_error
+
 
 class DatabaseManager:
 
@@ -92,15 +93,17 @@ class DatabaseManager:
     def save_history(self, user_id, speech_text, ai_response):
 
         try:
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             self.cursor.execute("""
             INSERT INTO history (
                 user_id,
                 speech_text,
-                ai_response
+                ai_response,
+                create_time
             )
-            VALUES (?, ?, ?)
-            """, (user_id, speech_text, ai_response))
+            VALUES (?, ?, ?, ?)
+            """, (user_id, speech_text, ai_response, current_time))
 
             self.conn.commit()
 
