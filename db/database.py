@@ -3,15 +3,11 @@ import sqlite3
 from utils.config import DATABASE_PATH
 from utils.logger import log_info, log_error
 
-
 class DatabaseManager:
 
     def __init__(self):
         self.conn = sqlite3.connect(DATABASE_PATH)
         self.cursor = self.conn.cursor()
-
-    def create_tables(self):
-        pass
 
     # 创建数据库表
     def create_tables(self):
@@ -39,3 +35,25 @@ class DatabaseManager:
         self.conn.commit()
 
         log_info("数据库表创建成功")
+    
+        # 用户注册
+    def register_user(self, username, password):
+
+        try:
+
+            self.cursor.execute("""
+            INSERT INTO users (username, password)
+            VALUES (?, ?)
+            """, (username, password))
+
+            self.conn.commit()
+
+            log_info(f"用户注册成功: {username}")
+
+            return True
+
+        except Exception as e:
+
+            log_error(f"用户注册失败: {e}")
+
+            return False
