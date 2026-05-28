@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ai import audio_io, speech_to_text, text_process, text_to_speech
 from ai.text_process import ProcessMode
-
+from db.database import DatabaseManager
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +53,13 @@ def run_from_wav(
     try:
         result.recognized_text = speech_to_text.transcribe(wav_path)
         result.reply_text = text_process.process_text(result.recognized_text, mode=mode)
+        db = DatabaseManager()
+
+        db.save_history(
+            user_id=1,
+            speech_text=result.recognized_text,
+            ai_response=result.reply_text
+        )
         if speak_reply:
             text_to_speech.speak(result.reply_text, block=True)
         result.success = True
