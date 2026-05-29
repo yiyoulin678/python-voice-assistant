@@ -89,6 +89,24 @@ class DatabaseManager:
 
             return False
         
+    def get_user_by_login(self, username, password):
+
+        try:
+
+            self.cursor.execute("""
+            SELECT id, username, role
+            FROM users
+            WHERE username = ? AND password = ?
+            """, (username, password))
+
+            return self.cursor.fetchone()
+
+        except Exception as e:
+
+            log_error(f"登录查询失败: {e}")
+
+            return None
+
         # 保存聊天记录
     def save_history(self, user_id, speech_text, ai_response):
 
