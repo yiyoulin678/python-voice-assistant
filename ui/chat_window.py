@@ -481,6 +481,7 @@ class ChatWindow(QMainWindow):
         self._set_busy(True, "正在思考…")
         worker = TextChatWorker(
             text,
+            userid=self.userid,
             speak_reply=self._speak_enabled(),
             mode=ProcessMode.QA,
             user_nickname=self.username,

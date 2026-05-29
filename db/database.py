@@ -107,6 +107,46 @@ class DatabaseManager:
 
             return None
 
+    def get_user_by_name(self, username):
+
+        self.cursor.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE username = ?
+            """,
+            (username,)
+        )
+
+        return self.cursor.fetchone()
+
+    def create_user_if_not_exists(self, username):
+
+        user = self.get_user_by_name(username)
+
+        if user:
+            return user[0]
+
+        self.cursor.execute(
+            """
+            INSERT INTO users(
+                username,
+                password,
+                create_time
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                username,
+                "",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+        )
+
+        self.conn.commit()
+
+        return self.cursor.lastrowid
+
         # 保存聊天记录
     def save_history(self, user_id, speech_text, ai_response):
 

@@ -273,6 +273,8 @@ class TextChatWorker(QThread):
 
         text: str,
 
+        userid,
+
         speak_reply: bool = True,
 
         mode: str = ProcessMode.QA,
@@ -292,6 +294,8 @@ class TextChatWorker(QThread):
         self.mode = mode
 
         self.user_nickname = user_nickname
+
+        self.user_id = userid
 
 
 
@@ -323,7 +327,7 @@ class TextChatWorker(QThread):
             db = DatabaseManager()
             
             db.save_history(
-                user_id=1,
+                user_id=self.user_id,
                 speech_text=self.text,
                 ai_response=result.reply_text
             )
