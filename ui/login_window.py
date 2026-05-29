@@ -64,6 +64,6 @@ class LoginWindow(QWidget):
         if not name:
             QMessageBox.warning(self, "提示", "请输入昵称。")
             return
-        self._chat = ChatWindow(username=name)
+        self._chat = ChatWindow(userid=1, username=name)
         self._chat.show()
         self.close()

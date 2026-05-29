@@ -16,7 +16,7 @@ from ai.text_process import ProcessMode
 
 from ai.tts.speaker import get_tts_backend_name, get_tts_status_label
 
-
+from db.database import DatabaseManager
 
 
 
@@ -319,6 +319,13 @@ class TextChatWorker(QThread):
 
                 self.text, mode=self.mode, user_nickname=self.user_nickname
 
+            )
+            db = DatabaseManager()
+            
+            db.save_history(
+                user_id=1,
+                speech_text=self.text,
+                ai_response=result.reply_text
             )
 
             result.success = True

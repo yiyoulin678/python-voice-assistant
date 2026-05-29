@@ -43,6 +43,7 @@ ASSISTANT_TITLE = "你的语音 AI 伙伴"
 class ChatWindow(QMainWindow):
     def __init__(self, userid, username) -> None:
         super().__init__()
+        self.userid = userid
         self.username = username.strip() or "用户"
         self._recording = False
         self._busy = False
