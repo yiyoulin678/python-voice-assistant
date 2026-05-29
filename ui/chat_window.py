@@ -34,13 +34,25 @@ from ui.workers import (
     TextChatWorker,
     TtsPreviewWorker,
 )
-
+from db.database import DatabaseManager
 
 ASSISTANT_NAME = "小音"
 ASSISTANT_TITLE = "你的语音 AI 伙伴"
 
 
 class ChatWindow(QMainWindow):
+
+    def _load_history(self):
+
+        db = DatabaseManager()
+
+        history = db.get_history(self.userid)
+
+        for speech_text, ai_response, create_time in history:
+
+            self._append_message(speech_text, is_user=True)
+            self._append_message(ai_response, is_user=False)
+
     def __init__(self, userid, username) -> None:
         super().__init__()
         self.userid = userid
@@ -58,8 +70,10 @@ class ChatWindow(QMainWindow):
         self.setWindowTitle(f"{ASSISTANT_NAME} — 语音 AI 虚拟女友")
         self.resize(520, 720)
         self._build_ui()
+        self._load_history()
         self._start_preload()
 
+    
     def _build_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
