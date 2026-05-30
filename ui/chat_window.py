@@ -450,7 +450,7 @@ class ChatWindow(QMainWindow):
         if time is None:
             t = datetime.now().strftime("%H:%M")
         else:
-            t = time[11:16]
+            t = time[:16]
         safe = html.escape(text).replace("\n", "<br/>")
         if is_user:
             bubble = "#95ec69"
