@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
+from datetime import datetime, time
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -49,8 +49,8 @@ class ChatWindow(QMainWindow):
 
         for speech_text, ai_response, create_time in history:
 
-            self._append_message(speech_text, is_user=True)
-            self._append_message(ai_response, is_user=False)
+            self._append_message(speech_text, is_user=True, time=create_time)
+            self._append_message(ai_response, is_user=False, time=create_time)
 
     def __init__(self, user_id, username) -> None:
         super().__init__()
@@ -445,8 +445,12 @@ class ChatWindow(QMainWindow):
         )
         self.chat.append(block)
 
-    def _append_message(self, text: str, is_user: bool) -> None:
-        t = datetime.now().strftime("%H:%M")
+    def _append_message(self, text: str, is_user: bool,time = None) -> None:
+        
+        if time is None:
+            t = datetime.now().strftime("%H:%M")
+        else:
+            t = time[11:16]
         safe = html.escape(text).replace("\n", "<br/>")
         if is_user:
             bubble = "#95ec69"
