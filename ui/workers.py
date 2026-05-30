@@ -1,6 +1,7 @@
 """后台线程：避免 AI / 录音 / CosyVoice 阻塞界面。"""
 
 from __future__ import annotations
+import traceback
 
 
 
@@ -273,7 +274,7 @@ class TextChatWorker(QThread):
 
         text: str,
 
-        userid,
+        user_id,
 
         speak_reply: bool = True,
 
@@ -295,7 +296,7 @@ class TextChatWorker(QThread):
 
         self.user_nickname = user_nickname
 
-        self.user_id = userid
+        self.user_id = user_id
 
 
 
@@ -389,6 +390,8 @@ class StopRecordAndProcessWorker(QThread):
 
         self,
 
+        user_id,
+
         speak_reply: bool = True,
 
         mode: str = ProcessMode.QA,
@@ -402,6 +405,8 @@ class StopRecordAndProcessWorker(QThread):
         self.speak_reply = speak_reply
 
         self.mode = mode
+
+        self.user_id = user_id
 
 
 
@@ -432,6 +437,8 @@ class StopRecordAndProcessWorker(QThread):
             inner = pipeline.run_from_wav(
 
                 result.recording_path,
+
+                user_id=self.user_id,
 
                 mode=self.mode,
 
@@ -469,7 +476,13 @@ class StopRecordAndProcessWorker(QThread):
 
         except Exception as exc:
 
-            result.error_message = f"未知错误: {exc}"
+            import traceback
+
+            print("\n===== PRELOAD ERROR =====")
+            traceback.print_exc()
+            print("=========================\n")
+
+            self.failed.emit(str(exc))
 
         self.finished.emit(result)
 

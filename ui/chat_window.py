@@ -39,23 +39,22 @@ from db.database import DatabaseManager
 ASSISTANT_NAME = "小音"
 ASSISTANT_TITLE = "你的语音 AI 伙伴"
 
-
 class ChatWindow(QMainWindow):
 
     def _load_history(self):
 
         db = DatabaseManager()
 
-        history = db.get_history(self.userid)
+        history = db.get_history(self.user_id)
 
         for speech_text, ai_response, create_time in history:
 
             self._append_message(speech_text, is_user=True)
             self._append_message(ai_response, is_user=False)
 
-    def __init__(self, userid, username) -> None:
+    def __init__(self, user_id, username) -> None:
         super().__init__()
-        self.userid = userid
+        self.user_id = user_id
         self.username = username.strip() or "用户"
         self._recording = False
         self._busy = False
@@ -481,7 +480,7 @@ class ChatWindow(QMainWindow):
         self._set_busy(True, "正在思考…")
         worker = TextChatWorker(
             text,
-            userid=self.userid,
+            user_id=self.user_id,
             speak_reply=self._speak_enabled(),
             mode=ProcessMode.QA,
             user_nickname=self.username,
@@ -534,6 +533,7 @@ class ChatWindow(QMainWindow):
         self.btn_talk.setText("🎤 按住说话")
         self._set_busy(True, "处理中…")
         worker = StopRecordAndProcessWorker(
+            user_id=self.user_id,
             speak_reply=self._speak_enabled(),
             parent=self,
         )
@@ -570,6 +570,7 @@ class ChatWindow(QMainWindow):
             self.btn_toggle_rec.setText("开始录音")
             self._set_busy(True, "处理中…")
             worker = StopRecordAndProcessWorker(
+                user_id=self.user_id,
                 speak_reply=self._speak_enabled(),
                 parent=self,
             )

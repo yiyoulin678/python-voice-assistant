@@ -65,9 +65,9 @@ class LoginWindow(QWidget):
             QMessageBox.warning(self, "提示", "请输入昵称。")
             return
         db = DatabaseManager()
-        userid = db.create_user_if_not_exists(name)
+        user_id = db.create_user_if_not_exists(name)
         self._chat = ChatWindow(
-            userid=userid,
+            user_id=user_id,
             username=name
         )
         self._chat.show()

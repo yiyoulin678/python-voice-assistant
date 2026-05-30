@@ -39,6 +39,7 @@ def preload_all(whisper_model: str | None = None) -> tuple[str, str]:
 
 def run_from_wav(
     wav_path: str,
+    user_id,
     mode: str = ProcessMode.QA,
     speak_reply: bool = True,
 ) -> VoiceSessionResult:
@@ -56,7 +57,7 @@ def run_from_wav(
         db = DatabaseManager()
 
         db.save_history(
-            user_id=1,
+            user_id=user_id,
             speech_text=result.recognized_text,
             ai_response=result.reply_text
         )
