@@ -48,7 +48,7 @@ def _load_model(model_name: str) -> Any:
 
     logger.info("正在加载 Whisper 模型 '%s'（首次可能需下载）…", model_name)
     try:
-        _model = whisper.load_model(model_name, download_root=str(MODELS_DIR))
+        _model = whisper.load_model(model_name)#, download_root=str(MODELS_DIR)
         _model_name = model_name
     except Exception as exc:
         raise SpeechToTextError(f"加载 Whisper 模型失败: {exc}") from exc

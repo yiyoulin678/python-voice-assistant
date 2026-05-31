@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
+from datetime import datetime, time
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -34,15 +34,27 @@ from ui.workers import (
     TtsPreviewWorker,
     TtsWarmupWorker,
 )
-
+from db.database import DatabaseManager
 
 ASSISTANT_NAME = "小音"
 ASSISTANT_TITLE = "你的语音 AI 伙伴"
 
-
 class ChatWindow(QMainWindow):
-    def __init__(self, username: str = "用户") -> None:
+
+    def _load_history(self):
+
+        db = DatabaseManager()
+
+        history = db.get_history(self.user_id)
+
+        for speech_text, ai_response, create_time in history:
+
+            self._append_message(speech_text, is_user=True, time=create_time)
+            self._append_message(ai_response, is_user=False, time=create_time)
+
+    def __init__(self, user_id, username) -> None:
         super().__init__()
+        self.user_id = user_id
         self.username = username.strip() or "用户"
         self._recording = False
         self._busy = False
@@ -57,8 +69,10 @@ class ChatWindow(QMainWindow):
         self.setWindowTitle(f"{ASSISTANT_NAME} — 语音 AI 虚拟女友")
         self.resize(520, 720)
         self._build_ui()
+        self._load_history()
         self._start_preload()
 
+    
     def _build_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
@@ -427,8 +441,12 @@ class ChatWindow(QMainWindow):
         )
         self.chat.append(block)
 
-    def _append_message(self, text: str, is_user: bool) -> None:
-        t = datetime.now().strftime("%H:%M")
+    def _append_message(self, text: str, is_user: bool,time = None) -> None:
+        
+        if time is None:
+            t = datetime.now().strftime("%H:%M")
+        else:
+            t = time[:16]
         safe = html.escape(text).replace("\n", "<br/>")
         if is_user:
             bubble = "#95ec69"
@@ -462,6 +480,7 @@ class ChatWindow(QMainWindow):
         self._set_busy(True, "正在思考…")
         worker = TextChatWorker(
             text,
+            user_id=self.user_id,
             speak_reply=self._speak_enabled(),
             mode=ProcessMode.QA,
             user_nickname=self.username,
@@ -514,6 +533,7 @@ class ChatWindow(QMainWindow):
         self.btn_talk.setText("🎤 按住说话")
         self._set_busy(True, "处理中…")
         worker = StopRecordAndProcessWorker(
+            user_id=self.user_id,
             speak_reply=self._speak_enabled(),
             parent=self,
         )
@@ -550,6 +570,7 @@ class ChatWindow(QMainWindow):
             self.btn_toggle_rec.setText("开始录音")
             self._set_busy(True, "处理中…")
             worker = StopRecordAndProcessWorker(
+                user_id=self.user_id,
                 speak_reply=self._speak_enabled(),
                 parent=self,
             )
@@ -579,3 +600,5 @@ class ChatWindow(QMainWindow):
         if self._worker and self._worker.isRunning():
             self._worker.wait(3000)
         super().closeEvent(event)
+
+    

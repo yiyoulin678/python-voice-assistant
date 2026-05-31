@@ -1,6 +1,7 @@
 """后台线程：避免 AI / 录音 / CosyVoice 阻塞界面。"""
 
 from __future__ import annotations
+import traceback
 
 
 
@@ -16,7 +17,7 @@ from ai.text_process import ProcessMode
 
 from ai.tts.speaker import get_tts_backend_name, get_tts_status_label
 
-
+from db.database import DatabaseManager
 
 
 
@@ -275,6 +276,8 @@ class TextChatWorker(QThread):
 
         text: str,
 
+        user_id,
+
         speak_reply: bool = True,
 
         mode: str = ProcessMode.QA,
@@ -294,6 +297,8 @@ class TextChatWorker(QThread):
         self.mode = mode
 
         self.user_nickname = user_nickname
+
+        self.user_id = user_id
 
 
 
@@ -321,6 +326,13 @@ class TextChatWorker(QThread):
 
                 self.text, mode=self.mode, user_nickname=self.user_nickname
 
+            )
+            db = DatabaseManager()
+            
+            db.save_history(
+                user_id=self.user_id,
+                speech_text=self.text,
+                ai_response=result.reply_text
             )
 
             result.success = True
@@ -380,6 +392,8 @@ class StopRecordAndProcessWorker(QThread):
 
         self,
 
+        user_id,
+
         speak_reply: bool = True,
 
         mode: str = ProcessMode.QA,
@@ -393,6 +407,8 @@ class StopRecordAndProcessWorker(QThread):
         self.speak_reply = speak_reply
 
         self.mode = mode
+
+        self.user_id = user_id
 
 
 
@@ -423,6 +439,8 @@ class StopRecordAndProcessWorker(QThread):
             inner = pipeline.run_from_wav(
 
                 result.recording_path,
+
+                user_id=self.user_id,
 
                 mode=self.mode,
 
@@ -460,7 +478,13 @@ class StopRecordAndProcessWorker(QThread):
 
         except Exception as exc:
 
-            result.error_message = f"未知错误: {exc}"
+            import traceback
+
+            print("\n===== PRELOAD ERROR =====")
+            traceback.print_exc()
+            print("=========================\n")
+
+            self.failed.emit(str(exc))
 
         self.finished.emit(result)
 

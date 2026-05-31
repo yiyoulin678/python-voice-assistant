@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ui.chat_window import ChatWindow
-
+from db.database import DatabaseManager
 
 class LoginWindow(QWidget):
     def __init__(self) -> None:
@@ -64,6 +64,11 @@ class LoginWindow(QWidget):
         if not name:
             QMessageBox.warning(self, "提示", "请输入昵称。")
             return
-        self._chat = ChatWindow(username=name)
+        db = DatabaseManager()
+        user_id = db.create_user_if_not_exists(name)
+        self._chat = ChatWindow(
+            user_id=user_id,
+            username=name
+        )
         self._chat.show()
         self.close()
