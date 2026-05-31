@@ -27,12 +27,12 @@ from ai.text_process import ProcessMode
 from ai.tts.speaker import get_tts_backend_name, get_tts_status_label
 from ui.workers import (
     PreloadWorker,
-    QwenWarmupWorker,
     RegisterCloneWorker,
     StartRecordingWorker,
     StopRecordAndProcessWorker,
     TextChatWorker,
     TtsPreviewWorker,
+    TtsWarmupWorker,
 )
 
 
@@ -50,7 +50,7 @@ class ChatWindow(QMainWindow):
         self._llm_label = "加载中…"
         self._tts_label = "加载中…"
         self._tts_ready = False
-        self._qwen_worker = None
+        self._tts_worker = None
         self._rec_starting = False
         self._rec_cancel = False
 
@@ -124,10 +124,10 @@ class ChatWindow(QMainWindow):
 
         # 选项：克隆播报 + 试听
         opts = QHBoxLayout()
-        self.chk_speak = QCheckBox("自动语音播报回复（Qwen3-TTS 女友声线）")
+        self.chk_speak = QCheckBox("自动语音播报回复（VoxCPM 女友声线）")
         self.chk_speak.setChecked(True)
         self.chk_speak.setToolTip(
-            "优先使用 Qwen3-TTS；不可用时尝试 CosyVoice 或系统语音。"
+            "优先使用 VoxCPM 声音克隆；不可用时尝试 CosyVoice 或系统语音。"
         )
         self.btn_preview = QPushButton("试听声线")
         self.btn_preview.setToolTip("播放一句示例，确认当前克隆/系统播报是否正常")
@@ -253,11 +253,7 @@ class ChatWindow(QMainWindow):
     def _refresh_voice_badge(self) -> None:
         backend = get_tts_backend_name()
         label = get_tts_status_label()
-        if backend == "qwen_tts":
-            self.lbl_voice.setText(f"声线：{label} ✓")
-            self.lbl_voice.setStyleSheet("color: #c2185b; font-size: 11px; font-weight: bold;")
-            self.chk_speak.setText(f"自动语音播报（{label}）")
-        elif backend in ("cosyvoice", "gpt_sovits"):
+        if backend in ("voxcpm", "qwen_tts", "cosyvoice", "gpt_sovits"):
             self.lbl_voice.setText(f"声线：{label} ✓")
             self.lbl_voice.setStyleSheet("color: #c2185b; font-size: 11px; font-weight: bold;")
             self.chk_speak.setText(f"自动语音播报（{label}）")
@@ -277,34 +273,34 @@ class ChatWindow(QMainWindow):
         self.btn_preview.setEnabled(True)
         self.btn_clone.setEnabled(True)
 
-        from ai.config import QWEN_TTS_MODE, QWEN_TTS_PRELOAD_ON_STARTUP, QWEN_TTS_REFERENCE_WAV
+        from ai.config import VOXCPM_MODE, VOXCPM_PRELOAD_ON_STARTUP, VOXCPM_REFERENCE_WAV
         from ai.llm import ollama_client
-        from ai.tts.backends import qwen_tts_backend
+        from ai.tts.backends import voxcpm_backend
 
         backend = get_tts_backend_name()
-        need_qwen_bg = (
-            QWEN_TTS_PRELOAD_ON_STARTUP
-            and backend == "qwen_tts"
-            and qwen_tts_backend.is_available()
+        need_tts_bg = (
+            VOXCPM_PRELOAD_ON_STARTUP
+            and backend == "voxcpm"
+            and voxcpm_backend.is_available()
             and not (
-                (QWEN_TTS_MODE or "").lower() == "clone"
-                and not QWEN_TTS_REFERENCE_WAV.is_file()
+                (VOXCPM_MODE or "").lower() == "clone"
+                and not VOXCPM_REFERENCE_WAV.is_file()
             )
         )
-        if need_qwen_bg:
+        if need_tts_bg:
             self._tts_ready = False
-            self._start_qwen_warmup()
+            self._start_tts_warmup()
             self._append_system(
-                "界面已可用。Qwen3-TTS（1.7B）正在后台载入显卡，约 1～3 分钟；"
-                "完成前可先文字聊天，语音播报会自动启用。"
+                "界面已可用。VoxCPM 正在后台载入显卡（首次约 1～2 分钟）；"
+                "完成前可先文字聊天。"
             )
         else:
             self._tts_ready = True
 
         if ollama_client.is_available() and ollama_client.ensure_model_pulled():
-            if not need_qwen_bg:
+            if not need_tts_bg:
                 self._append_system(
-                    "模型已就绪～对话走本地 Ollama，回复可走 Qwen 克隆声线（见顶栏状态）。"
+                    "模型已就绪～对话走本地 Ollama，回复可走 VoxCPM 克隆声线（见顶栏状态）。"
                 )
         else:
             self._append_system(
@@ -312,31 +308,31 @@ class ChatWindow(QMainWindow):
                 "请保持 ollama serve 运行并拉取 qwen2.5:3b 后重启。"
             )
 
-    def _start_qwen_warmup(self) -> None:
-        if self._qwen_worker is not None and self._qwen_worker.isRunning():
+    def _start_tts_warmup(self) -> None:
+        if self._tts_worker is not None and self._tts_worker.isRunning():
             return
-        self._tts_label = "Qwen3-TTS 加载中…"
+        self._tts_label = "VoxCPM 加载中…"
         self._refresh_voice_badge()
-        self.lbl_status.setText("Qwen3-TTS 后台加载中（1.7B 约 1～3 分钟），可先文字聊天…")
-        self._qwen_worker = QwenWarmupWorker(self)
-        self._qwen_worker.status.connect(self.lbl_status.setText)
-        self._qwen_worker.finished_ok.connect(self._on_qwen_warmup_ok)
-        self._qwen_worker.failed.connect(self._on_qwen_warmup_fail)
-        self._qwen_worker.start()
+        self.lbl_status.setText("VoxCPM 后台加载中，可先文字聊天…")
+        self._tts_worker = TtsWarmupWorker(self)
+        self._tts_worker.status.connect(self.lbl_status.setText)
+        self._tts_worker.finished_ok.connect(self._on_tts_warmup_ok)
+        self._tts_worker.failed.connect(self._on_tts_warmup_fail)
+        self._tts_worker.start()
 
-    def _on_qwen_warmup_ok(self, label: str) -> None:
+    def _on_tts_warmup_ok(self, label: str) -> None:
         self._tts_label = label
         self._tts_ready = True
         self._refresh_voice_badge()
         self.lbl_status.setText(self._online_status())
-        self._append_system("Qwen3-TTS 已就绪，可以语音播报了～")
+        self._append_system("VoxCPM 已就绪，可以语音播报了～")
 
-    def _on_qwen_warmup_fail(self, msg: str) -> None:
+    def _on_tts_warmup_fail(self, msg: str) -> None:
         self._tts_ready = True
         self._refresh_llm_badge()
         self._refresh_voice_badge()
         self.lbl_status.setText(self._online_status())
-        self._append_system(f"Qwen3-TTS 加载失败，已切换备用播报：{msg}")
+        self._append_system(f"VoxCPM 加载失败，已切换备用播报：{msg}")
 
     def _on_preload_fail(self, msg: str) -> None:
         self._llm_label = "未检测"
@@ -360,10 +356,10 @@ class ChatWindow(QMainWindow):
         )
         if not path:
             return
-        from ai.config import QWEN_TTS_X_VECTOR_ONLY
+        from ai.config import VOXCPM_X_VECTOR_ONLY
 
         prompt = ""
-        if not QWEN_TTS_X_VECTOR_ONLY:
+        if not VOXCPM_X_VECTOR_ONLY:
             text, ok = QInputDialog.getText(
                 self,
                 "参考音频台词（必填）",
@@ -417,7 +413,7 @@ class ChatWindow(QMainWindow):
     def _speak_enabled(self) -> bool:
         if not self.chk_speak.isChecked():
             return False
-        if not self._tts_ready and get_tts_backend_name() == "qwen_tts":
+        if not self._tts_ready and get_tts_backend_name() in ("voxcpm", "qwen_tts"):
             return False
         return True
 

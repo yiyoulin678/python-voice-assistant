@@ -1,28 +1,66 @@
 # 声音克隆参考音频
 
+
+
 ## 方式一：GUI 里现场克隆（推荐）
 
+
+
 1. 打开小音 GUI  
+
 2. 点 **「选择克隆音频」**  
+
 3. 选你的 wav/mp3（建议 **3～10 秒**、安静、单人清晰人声）  
-4. **不用填台词**，等「声线已注册」后即可聊天  
 
-（当前 `x_vector_only_mode: true`，只根据音色克隆。若以后要更逼真，可在配置里改为 `false` 并填写与录音一致的文字。）
+4. **VoxCPM1.5 + x_vector_only**：可不填台词；若效果不佳可填写与录音一致的文字到 `voxcpm.prompt_text`
 
-当前配置为 **Qwen3-TTS clone 模式**，声线会缓存在内存里，**不用每句话重新克隆**。
 
-模型来自本机 **Qwen TTS WebUI 整合包**，通过其 **HTTP API** 合成。`api_url` 端口须与浏览器地址栏一致（如 `7861` → `http://127.0.0.1:7861`）。
 
-**加载时间**：当前为 **1.7B** 克隆模型，首次载入显卡约 **1～3 分钟**（有 RTX 4070 等独显时）；启动后会在**后台**加载，界面可先文字聊天。若仍嫌慢，可在 WebUI 里另下载 **0.6B-Base** 并把配置里的 `clone_model_id` 改为 `Qwen/Qwen3-TTS-12Hz-0.6B-Base`。
+当前为 **VoxCPM 克隆模式**，模型常驻显存，**不用每句话重新加载**。
 
-## 方式二：手动放文件
 
-复制为 `reference.wav`，并在 `config/ai_settings.json` 里设置一致的 `qwen_tts.prompt_text`。
 
-## 配置说明（`config/ai_settings.json` → `qwen_tts`）
+## 方式二：无参考音频（声音设计）
+
+
+
+在 `config/ai_settings.json` 中设：
+
+
+
+```json
+
+"voxcpm": { "mode": "design", "voice_design_prefix": "温柔甜美的年轻女声，亲切自然" }
+
+```
+
+
+
+## 方式三：手动放文件
+
+
+
+复制为 `reference.wav`。
+
+
+
+## 配置说明（`config/ai_settings.json` → `voxcpm`）
+
+
 
 | 字段 | 说明 |
+
 |------|------|
-| `mode` | `clone` = 用你的音频；`custom_voice` = 内置 Serena 等 |
-| `x_vector_only_mode` | `true` = 只给音频、不填台词也能克隆（音质略低） |
-| `prompt_text` | 与参考音频朗读内容一致时效果最好 |
+
+| `model_id` | `openbmb/VoxCPM1.5`（快）或 `openbmb/VoxCPM2`（更强） |
+
+| `mode` | `clone` / `design` |
+
+| `x_vector_only_mode` | `true` = 仅参考音频（VoxCPM2 最佳） |
+
+| `voice_design_prefix` | design 模式下的声线描述 |
+
+
+
+详见 `docs/SETUP_VOXCPM.md`。
+

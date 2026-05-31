@@ -77,24 +77,27 @@ class PreloadWorker(QThread):
             self.status.emit("正在加载语音识别 (Whisper)…")
             llm_label, tts_label = pipeline.preload_all()
             from ai.tts import speaker as tts_speaker
-            from ai.tts.backends import cosyvoice_backend, qwen_tts_backend
+            from ai.config import VOXCPM_MODE, VOXCPM_PRELOAD_ON_STARTUP, VOXCPM_REFERENCE_WAV
 
             backend = tts_speaker.get_tts_backend_name()
-            if backend == "qwen_tts" and qwen_tts_backend.is_available():
-                from ai.config import QWEN_TTS_MODE, QWEN_TTS_REFERENCE_WAV
-
-                if (QWEN_TTS_MODE or "").lower() == "clone" and not QWEN_TTS_REFERENCE_WAV.is_file():
-                    tts_label = "Qwen3-TTS 克隆（请先选择音频）"
+            if backend == "voxcpm":
+                if (VOXCPM_MODE or "").lower() == "clone" and not VOXCPM_REFERENCE_WAV.is_file():
+                    tts_label = tts_speaker.get_tts_status_label()
                     self.status.emit("请点击「选择克隆音频」注册声线")
+                elif VOXCPM_PRELOAD_ON_STARTUP:
+                    tts_label = "VoxCPM 后台加载中…"
+                    self.status.emit("语音识别已就绪；VoxCPM 将在后台加载…")
                 else:
-                    tts_label = "Qwen3-TTS 后台加载中…"
-                    self.status.emit("语音识别已就绪；Qwen3-TTS 将在后台加载…")
-            elif backend == "cosyvoice" and cosyvoice_backend.is_available():
-                self.status.emit("正在预热 CosyVoice（仅首次较慢）…")
-                cosyvoice_backend.warmup(on_status=self.status.emit)
-                tts_label = cosyvoice_backend.status_label()
+                    tts_label = tts_speaker.get_tts_status_label()
             else:
-                tts_label = tts_speaker.get_tts_status_label()
+                from ai.tts.backends import cosyvoice_backend
+
+                if backend == "cosyvoice" and cosyvoice_backend.is_available():
+                    self.status.emit("正在预热 CosyVoice（仅首次较慢）…")
+                    cosyvoice_backend.warmup(on_status=self.status.emit)
+                    tts_label = cosyvoice_backend.status_label()
+                else:
+                    tts_label = tts_speaker.get_tts_status_label()
             self.finished_ok.emit(f"{llm_label}|{tts_label}")
 
         except Exception as exc:
@@ -102,8 +105,8 @@ class PreloadWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class QwenWarmupWorker(QThread):
-    """后台加载 Qwen3-TTS，不阻塞主界面。"""
+class TtsWarmupWorker(QThread):
+    """后台加载当前 TTS 后端（VoxCPM 等），不阻塞主界面。"""
 
     status = pyqtSignal(str)
     finished_ok = pyqtSignal(str)
@@ -111,15 +114,14 @@ class QwenWarmupWorker(QThread):
 
     def run(self) -> None:
         try:
-            from ai.tts.backends import qwen_tts_backend
             from ai.tts import speaker as tts_speaker
 
-            qwen_tts_backend.warmup(on_status=self.status.emit)
-            self.finished_ok.emit(qwen_tts_backend.status_label())
+            tts_speaker.warmup(on_status=self.status.emit)
+            self.finished_ok.emit(tts_speaker.get_tts_status_label())
         except Exception as exc:
             import logging
 
-            logging.getLogger(__name__).warning("Qwen TTS 后台预热失败: %s", exc)
+            logging.getLogger(__name__).warning("TTS 后台预热失败: %s", exc)
             from ai.tts import speaker as tts_speaker
 
             tts_speaker.reset_backend_cache()
@@ -127,7 +129,7 @@ class QwenWarmupWorker(QThread):
 
 
 class RegisterCloneWorker(QThread):
-    """从用户选择的 wav 注册 Qwen 克隆声线。"""
+    """从用户选择的 wav 注册克隆声线。"""
 
     finished = pyqtSignal(bool, str)
     status = pyqtSignal(str)
@@ -139,14 +141,14 @@ class RegisterCloneWorker(QThread):
 
     def run(self) -> None:
         try:
-            from ai.tts.backends import qwen_tts_backend
+            from ai.tts import speaker as tts_speaker
 
-            qwen_tts_backend.set_reference(
+            tts_speaker.set_reference(
                 self.wav_path,
                 self.prompt_text or None,
                 on_status=self.status.emit,
             )
-            self.finished.emit(True, qwen_tts_backend.status_label())
+            self.finished.emit(True, tts_speaker.get_tts_status_label())
         except Exception as exc:
             self.finished.emit(False, str(exc))
 

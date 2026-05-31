@@ -6,9 +6,9 @@
 
 - **PyQt5 图形界面**：登录、聊天气泡、文字/语音输入
 - **本地对话**：Ollama + `qwen2.5:3b`（虚拟女友人设）
-- **声音克隆**：阿里 CosyVoice（参考 `reference.wav`）
+- **声音克隆**：VoxCPM（参考 `reference.wav`，可选 CosyVoice 兜底）
 - 语音识别（Whisper）
-- 语音播报（CosyVoice 优先，pyttsx3 兜底）
+- 语音播报（VoxCPM 优先，CosyVoice / pyttsx3 兜底）
 - 命令行端到端演示
 
 ## 环境
@@ -26,12 +26,13 @@ pip install -r requirements-ai.txt
 
 ```bash
 pip install -r requirements-ai.txt
-ollama pull qwen2.5:3b    # 本地大模型（对话）
-python scripts/check_ollama.py
+powershell -ExecutionPolicy Bypass -File scripts/install_voxcpm.ps1
+ollama pull qwen2.5:3b
+python scripts/check_voxcpm.py
 python main.py
 ```
 
-或双击 `run_gui.bat`。CosyVoice 安装见 [docs/SETUP_LLM_TTS.md](docs/SETUP_LLM_TTS.md)。
+或双击 `run_gui.bat`。VoxCPM 安装见 [docs/SETUP_VOXCPM.md](docs/SETUP_VOXCPM.md)。
 
 ### 命令行
 
@@ -53,7 +54,7 @@ config/             # 人设 persona_default.json、ai_settings.json
 ui/                 # PyQt5 界面
 ai/
   llm/              # Ollama 对话 + 规则兜底
-  tts/              # CosyVoice + pyttsx3
+  tts/              # VoxCPM + CosyVoice + pyttsx3
   audio_io.py
   speech_to_text.py
   pipeline.py

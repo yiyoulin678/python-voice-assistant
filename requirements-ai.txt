@@ -20,9 +20,13 @@ PyQt5>=5.15
 # LLM / 网络
 requests>=2.28
 
-# Qwen3-TTS（推荐，内置女声 / 可选克隆）
-qwen-tts>=0.1.0
+# VoxCPM（推荐，内置女声 / 声音克隆）
+# 需先 clone third_party/VoxCPM，再执行 scripts/install_voxcpm.ps1
+# voxcpm>=0.1.0
 soundfile>=0.12.1
+
+# Qwen3-TTS（可选备用）
+# qwen-tts>=0.1.0
 
 # CosyVoice 中文文本前端
 wetext>=0.0.9

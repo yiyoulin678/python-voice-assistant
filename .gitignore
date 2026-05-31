@@ -67,6 +67,7 @@ venv.bak/
 logs/
 data/
 third_party/CosyVoice/
+third_party/VoxCPM/
 third_party/ollama/
 third_party/**/pretrained_models/
 
@@ -76,6 +77,8 @@ resources/voice_ref/*
 
 models/*
 !models/.gitkeep
+models/voxcpm/
+pretrained_models/
 
 resources/recordings/*
 !resources/recordings/.gitkeep

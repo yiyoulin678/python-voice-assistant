@@ -1,6 +1,6 @@
-# Qwen3-TTS 接入说明
+# Qwen3-TTS（可选，已默认关闭）
 
-小音默认使用 **Qwen3-TTS**（阿里通义），无需单独开 GPT-SoVITS API。
+小音已改用 VoxCPM，见 [SETUP_VOXCPM.md](SETUP_VOXCPM.md)。以下为 Qwen 备用说明。
 
 ## 使用 Qwen TTS WebUI 整合包（推荐，已配置）
 
