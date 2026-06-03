@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Callable
@@ -38,7 +39,12 @@ class Live2DWidget(QOpenGLWidget):
         self._forward_drag: Callable[[QMouseEvent], bool] | None = None
         self._on_tap: Callable[[], None] | None = None
         self._press_position: QPointF | None = None
-        self._last_frame_time = time.time()
+        self._last_frame_time = time.monotonic()
+        self._expression_motion_hold_until = 0.0
+        self._held_expression_id = ""
+        self._held_snapshot_applied = False
+        self._idle_motion_started = False
+        self._physics_enabled = False
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
@@ -91,11 +97,24 @@ class Live2DWidget(QOpenGLWidget):
     def is_ready(self) -> bool:
         return self._ready
 
-    def set_expression(self, expression_id: str | None) -> None:
+    def is_holding_expression(self) -> bool:
+        return bool(self._held_expression_id)
+
+    def list_expression_ids(self) -> list[str]:
+        """列出可用表情 ID（含 model3 未登记、仅通过 LoadExtraExpression 加载的）。"""
+        return self._discover_expression_ids()
+
+    def set_expression(
+        self,
+        expression_id: str | None,
+        *,
+        hold_motion: bool = False,
+    ) -> None:
         if not self._ready or self._model is None:
             self._pending_expression = expression_id
             return
-        self._apply_expression(expression_id)
+        self.makeCurrent()
+        self._apply_expression(expression_id, hold_motion=hold_motion)
         self.update()
 
     def set_mouth_open(self, value: float) -> None:
@@ -110,8 +129,7 @@ class Live2DWidget(QOpenGLWidget):
         if not self._ready or self._model is None:
             self._overlay_expressions.add(expression_id)
             return
-        known = set(self._model.GetExpressionIds())
-        if expression_id in known:
+        if expression_id in set(self._discover_expression_ids()):
             self._model.AddExpression(expression_id)
             self._overlay_expressions.add(expression_id)
 
@@ -140,6 +158,10 @@ class Live2DWidget(QOpenGLWidget):
         self._ready = False
         self._pending_expression = live2d_config.default_expression
         self._mouth_open = 0.0
+        self._expression_motion_hold_until = 0.0
+        self._held_expression_id = ""
+        self._held_snapshot_applied = False
+        self._idle_motion_started = False
         self.clear_expression_overlays()
         if self._model is not None:
             live2d = get_live2d_module()
@@ -148,7 +170,25 @@ class Live2DWidget(QOpenGLWidget):
             live2d.glInit()
             self._load_model()
 
+    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().showEvent(event)
+        if not self._ready:
+            QTimer.singleShot(0, self._ensure_gl_initialized)
+
+    def _ensure_gl_initialized(self) -> None:
+        if self._ready or self._model is not None:
+            return
+        if not self.isVisible() or self.width() <= 0 or self.height() <= 0:
+            return
+        self.makeCurrent()
+        if self.context() is None or not self.context().isValid():
+            self.update()
+            return
+        self.initializeGL()
+
     def initializeGL(self) -> None:
+        if self._model is not None:
+            return
         live2d = get_live2d_module()
         live2d.glInit()
         self._load_model()
@@ -169,18 +209,34 @@ class Live2DWidget(QOpenGLWidget):
     def _advance_model_frame(self) -> None:
         if self._model is None:
             return
-        now = time.time()
+        now = time.monotonic()
         dt = min(now - self._last_frame_time, 0.1)
         self._last_frame_time = now
+        if (
+            self._expression_motion_hold_until > 0.0
+            and now >= self._expression_motion_hold_until
+        ):
+            self._expression_motion_hold_until = 0.0
+            self._held_expression_id = ""
+            self._held_snapshot_applied = False
+            self._start_idle_motion()
         core = self._model._model
         core.Update(dt)
-        if not core.IsMotionFinished():
-            core.UpdateMotion(dt)
+        if self._held_expression_id:
+            if not self._held_snapshot_applied:
+                core.LoadParameters()
+                self._apply_exp3_snapshot(self._held_expression_id)
+                self._held_snapshot_applied = True
+            return
+        core.LoadParameters()
+        if not core.IsMotionFinished() and core.UpdateMotion(dt):
+            core.SaveParameters()
         core.UpdateExpression(dt)
-        try:
-            core.UpdatePhysics(dt)
-        except Exception:
-            pass
+        if self._physics_enabled:
+            try:
+                core.UpdatePhysics(dt)
+            except Exception:
+                pass
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -214,24 +270,17 @@ class Live2DWidget(QOpenGLWidget):
         live2d = get_live2d_module()
         self._model = live2d.LAppModel()
         self._model.LoadModelJson(str(self._model_json))
-        self._load_expressions()
-        self._start_idle_motion()
+        self._idle_motion_started = False
         self._model.SetScale(self._scale)
         if self.width() > 0 and self.height() > 0:
             self._model.Resize(self.width(), self.height())
         self._ready = True
         self._frame_timer.start()
-        self._apply_expression(self._pending_expression or self._live2d_config.default_expression)
+        default_expression = self._pending_expression or self._live2d_config.default_expression
+        self._apply_expression(default_expression, hold_motion=False)
+        self._start_idle_motion()
         if self._on_ready is not None:
             self._on_ready()
-
-    def _load_expressions(self) -> None:
-        if self._model is None:
-            return
-        for path in sorted(self._model_dir.glob("*.exp3.json")):
-            expression_id = path.name[: -len(".exp3.json")]
-            if expression_id:
-                self._model.LoadExtraExpression(expression_id, str(path))
 
     def _start_idle_motion(self) -> None:
         if self._model is None:
@@ -243,18 +292,88 @@ class Live2DWidget(QOpenGLWidget):
         if not motion_path.is_file():
             return
         live2d = get_live2d_module()
-        self._model.LoadExtraMotion(live2d.MotionGroup.IDLE, str(motion_path))
+        groups = self._model.GetMotionGroups()
+        if live2d.MotionGroup.IDLE not in groups or groups[live2d.MotionGroup.IDLE] <= 0:
+            if not self._idle_motion_started:
+                self._model.LoadExtraMotion(live2d.MotionGroup.IDLE, str(motion_path))
+                self._idle_motion_started = True
         self._model.StartMotion(live2d.MotionGroup.IDLE, 0, live2d.MotionPriority.IDLE)
 
-    def _apply_expression(self, expression_id: str | None) -> None:
+    def _discover_expression_ids(self) -> list[str]:
+        ids: set[str] = set()
+        if self._model_dir.is_dir():
+            for path in self._model_dir.glob("*.exp3.json"):
+                expression_id = path.stem.strip()
+                if expression_id:
+                    ids.add(expression_id)
+        if self._ready and self._model is not None:
+            for item in self._model.GetExpressionIds():
+                if isinstance(item, str):
+                    expression_id = item.strip()
+                elif isinstance(item, (list, tuple)) and item:
+                    expression_id = str(item[0]).strip()
+                elif isinstance(item, dict):
+                    raw = item.get("Id") or item.get("id") or item.get("Name")
+                    expression_id = str(raw).strip() if raw else ""
+                else:
+                    expression_id = str(item).strip()
+                if expression_id:
+                    ids.add(expression_id)
+        return sorted(ids)
+
+    def _apply_expression(self, expression_id: str | None, *, hold_motion: bool = True) -> None:
         if self._model is None:
             return
         expression_id = (expression_id or "").strip()
         if not expression_id:
+            self._expression_motion_hold_until = 0.0
+            self._held_expression_id = ""
+            self._held_snapshot_applied = False
+            self._model.ResetExpression()
+            if not hold_motion:
+                return
+            self._start_idle_motion()
+            return
+        if expression_id not in set(self._discover_expression_ids()):
             self._model.ResetExpression()
             return
-        known = set(self._model.GetExpressionIds())
-        if expression_id in known:
-            self._model.SetExpression(expression_id)
+        if hold_motion:
+            self._expression_motion_hold_until = time.monotonic() + 2.5
+            self._held_expression_id = expression_id
+            self._held_snapshot_applied = False
+            self._model.StopAllMotions()
             return
+        self._held_expression_id = ""
+        self._held_snapshot_applied = False
+        self._expression_motion_hold_until = 0.0
         self._model.ResetExpression()
+        self._model.SetExpression(expression_id)
+        self._model._model.UpdateExpression(1.0)
+
+    def _apply_exp3_snapshot(self, expression_id: str) -> bool:
+        path = self._model_dir / f"{expression_id}.exp3.json"
+        if not path.is_file():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        parameters = data.get("Parameters")
+        if not isinstance(parameters, list) or not parameters:
+            return False
+        self._model.ResetParameters()
+        for entry in parameters:
+            if not isinstance(entry, dict):
+                continue
+            param_id = str(entry.get("Id", "")).strip()
+            if not param_id:
+                continue
+            value = float(entry.get("Value", 0.0))
+            blend = str(entry.get("Blend", "Add")).strip().lower()
+            if blend == "add":
+                self._model.AddParameterValue(param_id, value)
+            elif blend == "multiply":
+                self._model.SetParameterValue(param_id, value)
+            else:
+                self._model.SetParameterValue(param_id, value)
+        return True

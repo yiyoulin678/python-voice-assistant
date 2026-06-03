@@ -11,6 +11,7 @@ from app.config.character_loader import CharacterLive2D, CharacterProfile
 from app.llm.chat_reply import ChatSegment
 from app.ui.live2d_interaction import Live2DInteractionController
 from app.ui.live2d_lipsync import Live2DLipSyncController
+from app.ui.live2d_input_overlay import Live2DInputOverlay
 from app.ui.live2d_widget import Live2DWidget
 from app.ui.portrait_controller import (
     PORTRAIT_BASE_MAX_HEIGHT,
@@ -55,7 +56,13 @@ class Live2DPortraitController(QObject):
         )
         self.live2d_widget.setFixedSize(self._stage_width, self._stage_height)
         self.live2d_widget.set_display_scale(self.portrait_scale_percent / 100)
+        self.live2d_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.live2d_widget.show()
+
+        self.input_overlay = Live2DInputOverlay(parent_widget)
+        self.input_overlay.setFixedSize(self._stage_width, self._stage_height)
+        self.input_overlay.show()
+        self.input_overlay.raise_()
 
         self._tray_pixmap = self._load_tray_pixmap(profile.default_portrait_path)
         self.pixmap = self._tray_pixmap
@@ -79,6 +86,10 @@ class Live2DPortraitController(QObject):
         return self.live2d_widget
 
     @property
+    def portrait_input_widget(self) -> QWidget:
+        return self.input_overlay
+
+    @property
     def portrait_stage_size(self) -> tuple[int, int]:
         return self.live2d_widget.width(), self.live2d_widget.height()
 
@@ -93,6 +104,7 @@ class Live2DPortraitController(QObject):
         self._stage_width, self._stage_height = self._scaled_stage_dimensions()
         self.live2d_widget.setFixedSize(self._stage_width, self._stage_height)
         self.live2d_widget.set_display_scale(self.portrait_scale_percent / 100)
+        self.input_overlay.setFixedSize(self._stage_width, self._stage_height)
 
     def set_profile(self, profile: CharacterProfile) -> QPixmap:
         self.profile = profile
@@ -116,7 +128,7 @@ class Live2DPortraitController(QObject):
                 self._apply_speaking_expressions()
             return
         self._current_expression = expression_id
-        self.live2d_widget.set_expression(expression_id)
+        self.live2d_widget.set_expression(expression_id, hold_motion=False)
         if self._is_speaking:
             self._apply_speaking_expressions()
 
@@ -156,18 +168,37 @@ class Live2DPortraitController(QObject):
 
     def _on_live2d_ready(self) -> None:
         self.apply_current()
-        self.live2d_widget.set_expression(self._current_expression)
+        self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
         self._interaction.start()
 
     def trigger_tap(self, x: float, y: float) -> None:
         self._interaction.handle_tap(x, y)
 
+    @property
+    def current_expression(self) -> str | None:
+        return self._current_expression
+
+    def apply_expression(self, expression_id: str) -> bool:
+        """菜单手动切换表情；未就绪时会排队，模型加载后自动应用。"""
+        expression_id = expression_id.strip()
+        if not expression_id:
+            return False
+        if expression_id not in self.live2d_widget.list_expression_ids():
+            return False
+        self._interaction.cancel_scheduled_restore()
+        self._interaction.cancel_idle_variation()
+        self._current_expression = expression_id
+        self.live2d_widget.set_expression(expression_id, hold_motion=True)
+        if self._is_speaking and self.live2d_widget.is_ready():
+            self._apply_speaking_expressions()
+        return True
+
     def _restore_base_expression(self) -> None:
         if self._is_speaking:
-            self.live2d_widget.set_expression(self._current_expression)
+            self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
             self._apply_speaking_expressions()
             return
-        self.live2d_widget.set_expression(self._current_expression)
+        self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
 
     def _load_tray_pixmap(self, portrait_path: Path) -> QPixmap:
         pixmap = QPixmap(str(portrait_path))

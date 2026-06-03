@@ -79,8 +79,11 @@ def apply_locked_mouse_transparency(window: QWidget, locked: bool) -> None:
     if controller is not None:
         stage = getattr(controller, "portrait_stage_widget", None)
         if stage is not None:
-            stage.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-            stage.setEnabled(True)
+            stage.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay = getattr(controller, "input_overlay", None)
+        if overlay is not None:
+            overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            overlay.setEnabled(True)
 
 
 def _native_rect_edges(window: QWidget, rect: QRect) -> tuple[int, int, int, int]:

@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
+    QAction,
     QCursor,
     QFont,
     QIcon,
@@ -245,7 +246,6 @@ class PetWindow(QWidget):
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
         self.drag_offset: QPoint | None = None
-        self._live2d_press_local: QPointF | None = None
         self.portrait_scale_percent = self._load_portrait_scale_percent()
         (
             self.subtitle_typing_interval_ms,
@@ -547,14 +547,11 @@ class PetWindow(QWidget):
             apply_locked_window_region(self, True)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
-        live2d_widget = self._live2d_stage_widget()
-        if (
-            self._using_live2d
-            and live2d_widget is not None
-            and watched is live2d_widget
-            and isinstance(event, QMouseEvent)
-        ):
-            return self._handle_live2d_portrait_mouse(event)
+        if isinstance(event, QMouseEvent) and self._using_live2d:
+            input_overlay = self._live2d_input_overlay()
+            live2d_widget = self._live2d_stage_widget()
+            if watched is input_overlay or watched is live2d_widget:
+                return False
         if self._live2d_hover_ui and event.type() in (
             QEvent.Type.Enter,
             QEvent.Type.Leave,
@@ -673,6 +670,14 @@ class PetWindow(QWidget):
             return None
         return controller.live2d_widget
 
+    def _live2d_input_overlay(self) -> QWidget | None:
+        if not self._using_live2d:
+            return None
+        controller = self.portrait_controller
+        if not isinstance(controller, Live2DPortraitController):
+            return None
+        return controller.input_overlay
+
     def _handle_live2d_portrait_mouse(self, event: QMouseEvent) -> bool:
         event_type = event.type()
         if event_type == QEvent.Type.MouseButtonPress:
@@ -681,7 +686,6 @@ class PetWindow(QWidget):
                 event.accept()
                 return True
             if event.button() == Qt.MouseButton.LeftButton:
-                self._live2d_press_local = event.position()
                 return self._handle_mouse_press(event)
             return False
         if event_type == QEvent.Type.MouseMove:
@@ -690,11 +694,6 @@ class PetWindow(QWidget):
             event_type == QEvent.Type.MouseButtonRelease
             and event.button() == Qt.MouseButton.LeftButton
         ):
-            if self._live2d_press_local is not None:
-                delta = event.position() - self._live2d_press_local
-                if delta.manhattanLength() <= 12:
-                    self._trigger_live2d_tap(event.position())
-            self._live2d_press_local = None
             return self._handle_mouse_release(event)
         return False
 
@@ -913,7 +912,7 @@ class PetWindow(QWidget):
     def _ui_hover_targets(self) -> tuple[QWidget, ...]:
         targets: list[QWidget] = [self]
         if isinstance(self.portrait_controller, Live2DPortraitController):
-            targets.append(self.portrait_controller.live2d_widget)
+            targets.append(self.portrait_controller.input_overlay)
         if self._ui_controls_visible():
             targets.extend(
                 [
@@ -1064,19 +1063,26 @@ class PetWindow(QWidget):
         controls_visible = not self._live2d_hover_ui or self._ui_controls_visible()
 
         portrait_width, portrait_height = self.portrait_controller.portrait_stage_size
-        portrait_widget = self.portrait_controller.portrait_stage_widget
         portrait_y = max(0, height - portrait_height - STAGE_BOTTOM_INSET)
         portrait_x = (width - portrait_width) // 2
-        portrait_widget.move(portrait_x, portrait_y)
         self._portrait_hit_rect = QRect(portrait_x, portrait_y, portrait_width, portrait_height)
-        if not self._using_live2d:
+        if isinstance(self.portrait_controller, Live2DPortraitController):
+            live2d_controller = self.portrait_controller
+            live2d_controller.live2d_widget.move(portrait_x, portrait_y)
+            live2d_controller.input_overlay.move(portrait_x, portrait_y)
+            live2d_controller.input_overlay.setFixedSize(portrait_width, portrait_height)
+            live2d_controller.live2d_widget.lower()
+            live2d_controller.input_overlay.raise_()
+        else:
+            portrait_widget = self.portrait_controller.portrait_stage_widget
+            portrait_widget.move(portrait_x, portrait_y)
             transition_width = self.portrait_transition_label.width()
             transition_height = self.portrait_transition_label.height()
             self.portrait_transition_label.move(
                 (width - transition_width) // 2,
                 max(0, height - transition_height - STAGE_BOTTOM_INSET),
             )
-        portrait_widget.raise_()
+            portrait_widget.raise_()
 
         self._layout_music_lyrics_overlay(
             portrait_x=portrait_x,
@@ -1084,6 +1090,10 @@ class PetWindow(QWidget):
             portrait_width=portrait_width,
             portrait_height=portrait_height,
         )
+        if isinstance(self.portrait_controller, Live2DPortraitController):
+            ctrl = self.portrait_controller
+            ctrl.live2d_widget.lower()
+            ctrl.input_overlay.raise_()
 
         if not controls_visible:
             return
@@ -1120,7 +1130,7 @@ class PetWindow(QWidget):
         self.tray_icon.show()
 
     def _build_menu(self) -> QMenu:
-        return build_pet_tray_menu(
+        menu = build_pet_tray_menu(
             self,
             chinese_subtitles_checked=self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
             free_access_checked=self.free_access_enabled,
@@ -1134,6 +1144,66 @@ class PetWindow(QWidget):
             on_show_settings=self.show_settings,
             on_restart=self._confirm_restart_application,
         )
+        if self._using_live2d:
+            self._append_live2d_expression_menu(menu)
+        return menu
+
+    def _append_live2d_expression_menu(self, menu: QMenu) -> None:
+        quit_action: QAction | None = None
+        for action in menu.actions():
+            if action.text() == "退出":
+                quit_action = action
+                break
+
+        expression_menu = QMenu("选择表情", menu)
+        controller = self.portrait_controller
+        if not isinstance(controller, Live2DPortraitController):
+            placeholder = QAction("（非 Live2D 模式）", menu)
+            placeholder.setEnabled(False)
+            expression_menu.addAction(placeholder)
+        else:
+            widget = controller.live2d_widget
+            expression_ids = widget.list_expression_ids()
+            current = controller.current_expression
+            ready = widget.is_ready()
+            if not expression_ids:
+                placeholder = QAction("（未找到表情文件 *.exp3.json）", menu)
+                placeholder.setEnabled(False)
+                expression_menu.addAction(placeholder)
+            else:
+                if not ready:
+                    status = QAction("（Live2D 加载中，可先选表情）", menu)
+                    status.setEnabled(False)
+                    expression_menu.addAction(status)
+                    expression_menu.addSeparator()
+                for expression_id in expression_ids:
+                    action = QAction(expression_id, menu)
+                    action.setCheckable(True)
+                    action.setChecked(expression_id == current)
+                    action.triggered.connect(
+                        lambda _checked=False, eid=expression_id: self._select_live2d_expression(eid)
+                    )
+                    expression_menu.addAction(action)
+
+        if quit_action is not None:
+            menu.insertSeparator(quit_action)
+            menu.insertMenu(quit_action, expression_menu)
+        else:
+            menu.addSeparator()
+            menu.addMenu(expression_menu)
+
+    def _select_live2d_expression(self, expression_id: str) -> None:
+        controller = self.portrait_controller
+        if not isinstance(controller, Live2DPortraitController):
+            return
+        if not controller.apply_expression(expression_id):
+            QMessageBox.warning(
+                self,
+                "表情切换失败",
+                f"未找到表情「{expression_id}」，请检查模型目录中的 .exp3.json 文件。",
+            )
+            return
+        debug_log("Live2D", "菜单切换表情", {"expression": expression_id})
 
     @Slot()
     def _confirm_restart_application(self) -> None:
@@ -3275,10 +3345,9 @@ class PetWindow(QWidget):
                 portrait_scale_percent=self.portrait_scale_percent,
                 parent=self,
             )
-            widget = controller.live2d_widget
-            widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            widget.customContextMenuRequested.connect(self._show_context_menu)
-            widget.set_forward_drag_handler(self._forward_live2d_mouse_event)
+            overlay = controller.input_overlay
+            overlay.bind_mouse_handler(self._handle_live2d_portrait_mouse)
+            overlay.bind_tap_handler(self._trigger_live2d_tap)
             return controller
 
         if profile.live2d is not None:
@@ -3303,11 +3372,11 @@ class PetWindow(QWidget):
     def _replace_portrait_controller(self, profile: CharacterProfile) -> None:
         old_controller = getattr(self, "portrait_controller", None)
         if old_controller is not None and getattr(self, "_using_live2d", False):
-            widget = old_controller.live2d_widget
-            widget.removeEventFilter(self)
-            widget.hide()
-            widget.setParent(None)
-            widget.deleteLater()
+            for widget in (old_controller.live2d_widget, old_controller.input_overlay):
+                widget.removeEventFilter(self)
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         self.portrait_controller = self._build_portrait_controller(profile)
         self._connect_live2d_tts_signals(self.tts_provider)
         if self._using_live2d:
@@ -3330,9 +3399,11 @@ class PetWindow(QWidget):
         self.input_backdrop.set_source_widgets(tuple(widgets))
 
     def _install_portrait_drag_filters(self) -> None:
+        if self._using_live2d and isinstance(self.portrait_controller, Live2DPortraitController):
+            self.portrait_controller.input_overlay.installEventFilter(self)
+            return
         self.portrait_controller.portrait_stage_widget.installEventFilter(self)
-        if not self._using_live2d:
-            self.portrait_transition_label.installEventFilter(self)
+        self.portrait_transition_label.installEventFilter(self)
 
     def _forward_live2d_mouse_event(self, event: QMouseEvent) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress:
