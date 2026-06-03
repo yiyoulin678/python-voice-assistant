@@ -110,6 +110,7 @@ from app.storage.visual_observation import (
     generate_visual_observation_id,
     should_inject_visual_context,
 )
+from app.ui.app_icon import load_tray_icon
 from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui import (
     FrostedGlassFrame,
@@ -810,9 +811,16 @@ class PetWindow(QWidget):
         self.input_backdrop.raise_()
         self.input_bar.raise_()
 
-    def _update_tray_icon_pixmap(self, pixmap: QPixmap) -> None:
+    def _resolve_tray_icon(self) -> QIcon:
+        icon = load_tray_icon(self.base_dir)
+        if icon is not None:
+            return icon
+        pixmap = self.portrait_controller.pixmap
+        return QIcon(pixmap) if not pixmap.isNull() else QIcon()
+
+    def _apply_tray_icon(self) -> None:
         if hasattr(self, "tray_icon"):
-            self.tray_icon.setIcon(QIcon(pixmap) if not pixmap.isNull() else QIcon())
+            self.tray_icon.setIcon(self._resolve_tray_icon())
 
     def _apply_fonts(self) -> None:
         text_font = _rounded_chinese_font(13, QFont.Weight.Bold)
@@ -1057,9 +1065,7 @@ class PetWindow(QWidget):
         self.input_backdrop.update()
 
     def _create_tray_icon(self) -> None:
-        pixmap = self.portrait_controller.pixmap
-        icon = QIcon(pixmap) if not pixmap.isNull() else QIcon()
-        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon = QSystemTrayIcon(self._resolve_tray_icon(), self)
         self.tray_icon.setToolTip(self.character_profile.display_name)
         self.tray_icon.setContextMenu(self._build_menu())
         self.tray_icon.activated.connect(self._handle_tray_activated)
@@ -3217,7 +3223,7 @@ class PetWindow(QWidget):
                 parent_widget=self,
                 stage_size=self.stage_size,
                 relayout=self._layout_stage,
-                on_portrait_changed=self._update_tray_icon_pixmap,
+                on_portrait_changed=lambda _pixmap: None,
                 portrait_scale_percent=self.portrait_scale_percent,
                 parent=self,
             )
@@ -3241,7 +3247,7 @@ class PetWindow(QWidget):
             stage_size=self.stage_size,
             relayout=self._layout_stage,
             raise_foreground=self._raise_foreground_controls,
-            on_portrait_changed=self._update_tray_icon_pixmap,
+            on_portrait_changed=lambda _pixmap: None,
             portrait_scale_percent=self.portrait_scale_percent,
             parent=self,
         )
@@ -3341,7 +3347,7 @@ class PetWindow(QWidget):
             portrait_pixmap = self.portrait_controller.set_profile(profile)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setToolTip(profile.display_name)
-            self.tray_icon.setIcon(QIcon(portrait_pixmap) if not portrait_pixmap.isNull() else QIcon())
+            self._apply_tray_icon()
 
         self.history_store = self._create_history_store(profile)
         self.visual_observation_store = self._create_visual_observation_store(profile)
