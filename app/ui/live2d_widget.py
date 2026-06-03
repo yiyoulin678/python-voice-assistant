@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -37,6 +38,7 @@ class Live2DWidget(QOpenGLWidget):
         self._forward_drag: Callable[[QMouseEvent], bool] | None = None
         self._on_tap: Callable[[], None] | None = None
         self._press_position: QPointF | None = None
+        self._last_frame_time = time.time()
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
@@ -54,6 +56,19 @@ class Live2DWidget(QOpenGLWidget):
 
     def set_on_tap(self, handler: Callable[[], None] | None) -> None:
         self._on_tap = handler
+
+    def play_idle_motion_burst(self) -> None:
+        if not self._ready or self._model is None:
+            return
+        live2d = get_live2d_module()
+        groups = self._model.GetMotionGroups()
+        if live2d.MotionGroup.IDLE not in groups or groups[live2d.MotionGroup.IDLE] <= 0:
+            return
+        self._model.StartMotion(
+            live2d.MotionGroup.IDLE,
+            0,
+            live2d.MotionPriority.NORMAL,
+        )
 
     def set_parameter(self, param_id: str, value: float) -> None:
         if self._ready and self._model is not None:
@@ -81,6 +96,7 @@ class Live2DWidget(QOpenGLWidget):
             self._pending_expression = expression_id
             return
         self._apply_expression(expression_id)
+        self.update()
 
     def set_mouth_open(self, value: float) -> None:
         self._mouth_open = max(0.0, min(1.0, value))
@@ -147,8 +163,24 @@ class Live2DWidget(QOpenGLWidget):
         live2d = get_live2d_module()
         live2d.clearBuffer(0.0, 0.0, 0.0, 0.0)
         self._model.SetParameterValue("ParamMouthOpenY", self._mouth_open)
-        self._model.Update()
+        self._advance_model_frame()
         self._model.Draw()
+
+    def _advance_model_frame(self) -> None:
+        if self._model is None:
+            return
+        now = time.time()
+        dt = min(now - self._last_frame_time, 0.1)
+        self._last_frame_time = now
+        core = self._model._model
+        core.Update(dt)
+        if not core.IsMotionFinished():
+            core.UpdateMotion(dt)
+        core.UpdateExpression(dt)
+        try:
+            core.UpdatePhysics(dt)
+        except Exception:
+            pass
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

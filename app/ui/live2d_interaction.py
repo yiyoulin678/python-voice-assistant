@@ -49,10 +49,14 @@ class Live2DInteractionController(QObject):
         if self._started:
             return
         self._started = True
-        self._widget.set_on_tap(self._on_tap)
+        self._widget.set_on_tap(lambda: self._on_tap(0.0, 0.0))
         self._schedule_idle_variation()
         if self._config.blink_enabled:
             self._schedule_blink()
+
+    def handle_tap(self, x: float, y: float) -> None:
+        if self._started and self._widget.is_ready():
+            self._on_tap(x, y)
 
     def stop(self) -> None:
         self._started = False
@@ -74,11 +78,14 @@ class Live2DInteractionController(QObject):
     def _finish_fleeting_expression(self) -> None:
         self._restore_expression()
 
-    def _on_tap(self) -> None:
+    def _on_tap(self, x: float, y: float) -> None:
+        _ = x, y
         choices = self._config.tap_expressions
         if not choices:
             return
-        self.play_fleeting_expression(random.choice(choices), hold_ms=1600)
+        self._widget.play_idle_motion_burst()
+        self.play_fleeting_expression(random.choice(choices), hold_ms=2000)
+        self._widget.update()
 
     def _schedule_idle_variation(self) -> None:
         if not self._config.idle_variation_expressions:

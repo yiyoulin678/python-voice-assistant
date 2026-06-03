@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPoint,
+    QPointF,
     QRect,
     Qt,
     QThread,
@@ -244,6 +245,7 @@ class PetWindow(QWidget):
         self.memory_curation_target_history_count = 0
         self.memory_curation_consumed_turns = 0
         self.drag_offset: QPoint | None = None
+        self._live2d_press_local: QPointF | None = None
         self.portrait_scale_percent = self._load_portrait_scale_percent()
         (
             self.subtitle_typing_interval_ms,
@@ -545,6 +547,14 @@ class PetWindow(QWidget):
             apply_locked_window_region(self, True)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        live2d_widget = self._live2d_stage_widget()
+        if (
+            self._using_live2d
+            and live2d_widget is not None
+            and watched is live2d_widget
+            and isinstance(event, QMouseEvent)
+        ):
+            return self._handle_live2d_portrait_mouse(event)
         if self._live2d_hover_ui and event.type() in (
             QEvent.Type.Enter,
             QEvent.Type.Leave,
@@ -654,6 +664,44 @@ class PetWindow(QWidget):
             event.accept()
             return True
         return False
+
+    def _live2d_stage_widget(self) -> QWidget | None:
+        if not self._using_live2d:
+            return None
+        controller = self.portrait_controller
+        if not isinstance(controller, Live2DPortraitController):
+            return None
+        return controller.live2d_widget
+
+    def _handle_live2d_portrait_mouse(self, event: QMouseEvent) -> bool:
+        event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.RightButton:
+                self._show_context_menu(event.position().toPoint())
+                event.accept()
+                return True
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._live2d_press_local = event.position()
+                return self._handle_mouse_press(event)
+            return False
+        if event_type == QEvent.Type.MouseMove:
+            return self._handle_mouse_move(event)
+        if (
+            event_type == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            if self._live2d_press_local is not None:
+                delta = event.position() - self._live2d_press_local
+                if delta.manhattanLength() <= 12:
+                    self._trigger_live2d_tap(event.position())
+            self._live2d_press_local = None
+            return self._handle_mouse_release(event)
+        return False
+
+    def _trigger_live2d_tap(self, local_pos: QPointF) -> None:
+        controller = self.portrait_controller
+        if isinstance(controller, Live2DPortraitController):
+            controller.trigger_tap(local_pos.x(), local_pos.y())
 
     def _apply_reply_segment(self, segment: ChatSegment) -> None:
         self.portrait_controller.apply_for_segment(segment)

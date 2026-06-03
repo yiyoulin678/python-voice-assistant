@@ -159,6 +159,9 @@ class Live2DPortraitController(QObject):
         self.live2d_widget.set_expression(self._current_expression)
         self._interaction.start()
 
+    def trigger_tap(self, x: float, y: float) -> None:
+        self._interaction.handle_tap(x, y)
+
     def _restore_base_expression(self) -> None:
         if self._is_speaking:
             self.live2d_widget.set_expression(self._current_expression)
