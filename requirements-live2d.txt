@@ -1,0 +1,3 @@
+# Live2D Cubism 3 渲染（桌宠真 Live2D）
+# 安装：runtime\python.exe -m pip install -r requirements-live2d.txt
+live2d-py>=0.7.0

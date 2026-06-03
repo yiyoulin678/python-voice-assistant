@@ -1,0 +1,6 @@
+# 语音输入（Whisper）可选依赖，安装：pip install -r requirements-stt.txt
+numpy>=1.24
+scipy>=1.10
+sounddevice>=0.4.6
+torch>=2.0
+openai-whisper>=20231117
