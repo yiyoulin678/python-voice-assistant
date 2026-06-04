@@ -31,6 +31,7 @@ class CharacterLive2D:
     idle_variation_min_seconds: float = 12.0
     idle_variation_max_seconds: float = 22.0
     blink_enabled: bool = True
+    physics_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -224,6 +225,7 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
     if idle_max < idle_min:
         idle_max = idle_min
     blink_enabled = _optional_bool(live2d_data.get("blink_enabled"), default=True)
+    physics_enabled = _optional_bool(live2d_data.get("physics_enabled"), default=True)
     return CharacterLive2D(
         model_json_path=model_json,
         idle_motion_file=idle_motion or None,
@@ -236,6 +238,7 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         idle_variation_min_seconds=idle_min,
         idle_variation_max_seconds=idle_max,
         blink_enabled=blink_enabled,
+        physics_enabled=physics_enabled,
     )
 
 

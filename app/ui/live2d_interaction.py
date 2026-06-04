@@ -53,6 +53,8 @@ class Live2DInteractionController(QObject):
         self._widget.set_on_tap(lambda: self._on_tap(0.0, 0.0))
         if self._config.blink_enabled:
             self._schedule_blink()
+        if self._config.idle_variation_expressions:
+            self._schedule_idle_variation()
 
     def handle_tap(self, x: float, y: float) -> None:
         if not self._started:
@@ -69,6 +71,10 @@ class Live2DInteractionController(QObject):
     def cancel_idle_variation(self) -> None:
         self._idle_timer.stop()
 
+    def resume_idle_variation(self) -> None:
+        if self._started and self._config.idle_variation_expressions:
+            self._schedule_idle_variation()
+
     def stop(self) -> None:
         self._started = False
         self._fleeting_timer.stop()
@@ -78,12 +84,21 @@ class Live2DInteractionController(QObject):
         self._blink_schedule_timer.stop()
         self._open_eyes()
 
-    def play_fleeting_expression(self, expression_id: str, *, hold_ms: int = 1400) -> None:
+    def play_fleeting_expression(
+        self,
+        expression_id: str,
+        *,
+        hold_ms: int = 1400,
+        freeze_motion: bool = False,
+    ) -> None:
         expression_id = expression_id.strip()
         if not expression_id or not self._widget.is_ready():
             return
         self._fleeting_timer.stop()
-        self._widget.set_expression(expression_id, hold_motion=True)
+        if freeze_motion:
+            self._widget.set_expression(expression_id, hold_motion=True)
+        else:
+            self._widget.show_fleeting_expression(expression_id)
         self._fleeting_timer.start(max(300, hold_ms))
 
     def _finish_fleeting_expression(self) -> None:
@@ -96,7 +111,7 @@ class Live2DInteractionController(QObject):
             return
         expression_id = random.choice(choices)
         debug_log("Live2D", "轻点触发表情", {"expression": expression_id, "x": round(x, 1), "y": round(y, 1)})
-        self.play_fleeting_expression(expression_id, hold_ms=2200)
+        self.play_fleeting_expression(expression_id, hold_ms=1600, freeze_motion=False)
         self._widget.update()
 
     def _schedule_idle_variation(self) -> None:
@@ -119,7 +134,8 @@ class Live2DInteractionController(QObject):
         ):
             self.play_fleeting_expression(
                 random.choice(self._config.idle_variation_expressions),
-                hold_ms=1800,
+                hold_ms=2200,
+                freeze_motion=False,
             )
         self._schedule_idle_variation()
 

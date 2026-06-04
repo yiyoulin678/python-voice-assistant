@@ -46,6 +46,7 @@ class Live2DPortraitController(QObject):
         self._relayout = relayout
         self._on_portrait_changed = on_portrait_changed
         self._current_expression: str | None = live2d_config.default_expression
+        self._persistent_expression_applied = False
         self._is_speaking = False
 
         self._stage_width, self._stage_height = self._scaled_stage_dimensions()
@@ -128,7 +129,8 @@ class Live2DPortraitController(QObject):
                 self._apply_speaking_expressions()
             return
         self._current_expression = expression_id
-        self.live2d_widget.set_expression(expression_id, hold_motion=False)
+        self._persistent_expression_applied = True
+        self.live2d_widget.set_persistent_expression(expression_id)
         if self._is_speaking:
             self._apply_speaking_expressions()
 
@@ -168,7 +170,6 @@ class Live2DPortraitController(QObject):
 
     def _on_live2d_ready(self) -> None:
         self.apply_current()
-        self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
         self._interaction.start()
 
     def trigger_tap(self, x: float, y: float) -> None:
@@ -188,17 +189,17 @@ class Live2DPortraitController(QObject):
         self._interaction.cancel_scheduled_restore()
         self._interaction.cancel_idle_variation()
         self._current_expression = expression_id
-        self.live2d_widget.set_expression(expression_id, hold_motion=True)
+        self._persistent_expression_applied = True
+        self.live2d_widget.set_persistent_expression(expression_id)
+        self._interaction.resume_idle_variation()
         if self._is_speaking and self.live2d_widget.is_ready():
             self._apply_speaking_expressions()
         return True
 
     def _restore_base_expression(self) -> None:
+        self.live2d_widget.clear_fleeting_expressions(restart_motion=not self._is_speaking)
         if self._is_speaking:
-            self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
             self._apply_speaking_expressions()
-            return
-        self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
 
     def _load_tray_pixmap(self, portrait_path: Path) -> QPixmap:
         pixmap = QPixmap(str(portrait_path))
