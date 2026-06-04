@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,7 +127,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         api_settings=settings,
         scope_id=character_profile.id,
     )
-    memory_store.preload(wait=False)
+    if not os.environ.get("SAKURA_SKIP_MEM0_PRELOAD"):
+        memory_store.preload(wait=False)
     reminder_store = ReminderStore(base_dir / "data" / "reminders.json")
     tool_registry = create_builtin_tool_registry(
         base_dir,
