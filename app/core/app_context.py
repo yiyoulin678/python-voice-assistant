@@ -67,6 +67,8 @@ class AppContext:
     storage: StorageServices
     features: FeatureServices
     startup_initializing: bool = False
+    current_user: str = ""
+    current_role: str = "user"
 
     @property
     def api_client(self) -> OpenAICompatibleClient:

@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+from app.auth.user_db import UserDB
+from app.ui.login_dialog import LoginDialog
 import sys
 from pathlib import Path
 
@@ -60,6 +61,13 @@ class DeferredStartupWorker(QObject):
 def main() -> int:
     hide_attached_console()
     app = QApplication(sys.argv)
+    user_db = UserDB(
+        BASE_DIR / "users.db"
+    )
+    login_dialog = LoginDialog(user_db)
+
+    if login_dialog.exec() != QDialog.DialogCode.Accepted:
+        return 0
     app.setApplicationName(APP_FULL_NAME)
     app.setQuitOnLastWindowClosed(False)
     app.aboutToQuit.connect(dispose_live2d)

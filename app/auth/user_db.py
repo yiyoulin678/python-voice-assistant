@@ -1,0 +1,105 @@
+from pathlib import Path
+import sqlite3
+import hashlib
+
+
+class UserDB:
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.init_db()
+
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS users(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password_hash TEXT,
+            role TEXT
+        )
+        """)
+
+        conn.commit()
+        conn.close()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        )
+
+        count = cursor.fetchone()[0]
+
+        if count == 0:
+            conn.execute(
+                """
+                INSERT INTO users(
+                    username,
+                    password_hash,
+                    role
+                )
+                VALUES(?,?,?)
+                """,
+                (
+                    "admin",
+                    self.hash_password("admin123"),
+                    "admin"
+                )
+            )
+            conn.commit()
+        conn.close()
+
+    def hash_password(self, password: str) -> str:
+        return hashlib.sha256(password.encode()).hexdigest()
+
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        role: str = "user"
+    ):
+        conn = sqlite3.connect(self.db_path)
+
+        conn.execute(
+            """
+            INSERT INTO users(username,password_hash,role)
+            VALUES(?,?,?)
+            """,
+            (
+                username,
+                self.hash_password(password),
+                role
+            )
+        )
+
+        conn.commit()
+        conn.close()
+
+    def verify_user(
+        self,
+        username: str,
+        password: str
+    ):
+        conn = sqlite3.connect(self.db_path)
+
+        cursor = conn.execute(
+            """
+            SELECT role,password_hash
+            FROM users
+            WHERE username=?
+            """,
+            (username,)
+        )
+
+        row = cursor.fetchone()
+
+        conn.close()
+
+        if not row:
+            return None
+
+        role, password_hash = row
+
+        if password_hash == self.hash_password(password):
+            return role
+
+        return None
