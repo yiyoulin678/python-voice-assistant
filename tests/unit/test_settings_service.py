@@ -122,6 +122,11 @@ tts:
 """.lstrip(),
         encoding="utf-8",
     )
+    work_path = root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    runtime_dir = work_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "python.exe").write_text("", encoding="utf-8")
+    (work_path / "api_v2.py").write_text("", encoding="utf-8")
 
     settings = service.load_tts_settings(validate_enabled=False)
 

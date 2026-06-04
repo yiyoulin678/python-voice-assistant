@@ -30,7 +30,7 @@ from app.voice.tts import (
     TTSProvider,
 )
 from app.storage.visual_observation import VisualObservationStore
-from app.core.plugin_manager import MutsukiPluginManager
+from app.core.plugin_manager import MutsukiPluginManager, SakuraPluginManager
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 50

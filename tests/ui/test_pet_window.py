@@ -202,9 +202,9 @@ def test_portrait_controller_scales_pixmap_by_configured_percent() -> None:
     )
 
     expected_sizes = {
-        50: (280, 280),
-        100: (560, 560),
-        150: (840, 840),
+        50: (220, 225),
+        100: (440, 450),
+        150: (660, 675),
     }
     for percent, expected_size in expected_sizes.items():
         controller.set_portrait_scale_percent(percent)
@@ -230,8 +230,8 @@ def test_pet_window_loads_normalized_portrait_scale_percent() -> None:
             assert section == "ui"
             return self.values
 
-    assert MinimalWindow({})._load_portrait_scale_percent() == 100
-    assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 100
+    assert MinimalWindow({})._load_portrait_scale_percent() == 80
+    assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 80
     assert MinimalWindow({"portrait_scale_percent": 20})._load_portrait_scale_percent() == 50
     assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 150
 
@@ -1798,6 +1798,9 @@ def test_main_first_run_settings_saves_imported_character_and_builds_context(mon
             self.result_portrait_scale_percent = 125
             self.result_subtitle_typing_interval_ms = 70
             self.result_reply_segment_pause_ms = 800
+            self.result_stt_settings = __import__(
+                "app.voice.stt_settings", fromlist=["STTSettings"]
+            ).STTSettings()
 
         def exec(self):  # type: ignore[no-untyped-def]
             return sakura_main.QDialog.DialogCode.Accepted
@@ -2380,7 +2383,10 @@ def test_set_busy_disables_manual_screenshot_button() -> None:
     class MinimalBusyWindow:
         _set_busy = PetWindow._set_busy
 
+    from app.voice.stt_settings import STTSettings
+
     window = MinimalBusyWindow()
+    window.stt_settings = STTSettings()
     window.input_edit = _DummyEditableInput("")
     window.screenshot_button = _DummyButton()
     window.send_button = _DummyButton()
@@ -3168,6 +3174,9 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
     window.warmed_tts_provider = None
     window.voice_playback_controller = VoicePlaybackControllerStub()
     window.subtitle_controller = _DummySubtitleController()
+    from app.voice.stt_settings import STTSettings
+
+    window.stt_settings = STTSettings()
     return window
 
 

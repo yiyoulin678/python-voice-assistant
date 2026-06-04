@@ -13,7 +13,6 @@ def test_handle_tap_plays_expression() -> None:
     )
     widget = MagicMock()
     widget.is_ready.return_value = True
-    widget.play_idle_motion_burst = MagicMock()
     widget.update = MagicMock()
     controller = Live2DInteractionController(
         widget,
@@ -23,5 +22,5 @@ def test_handle_tap_plays_expression() -> None:
     controller._started = True
     controller.handle_tap(100.0, 200.0)
     widget.set_expression.assert_called_once()
-    widget.play_idle_motion_burst.assert_called_once()
+    assert widget.set_expression.call_args.kwargs.get("hold_motion") is True
     widget.update.assert_called_once()
