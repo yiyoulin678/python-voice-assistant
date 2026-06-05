@@ -103,3 +103,22 @@ class UserDB:
             return role
 
         return None
+    
+    def user_exists(self, username: str) -> bool:
+
+        conn = sqlite3.connect(self.db_path)
+
+        cursor = conn.execute(
+            """
+            SELECT 1
+            FROM users
+            WHERE username=?
+            """,
+            (username,)
+        )
+
+        result = cursor.fetchone()
+
+        conn.close()
+
+        return result is not None
