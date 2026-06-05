@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 from app.ui.register_dialog import RegisterDialog
+from app.auth.session import UserSession
 
 class LoginDialog(QDialog):
 
@@ -61,7 +62,8 @@ class LoginDialog(QDialog):
 
         self.username = username
         self.role = role
-
+        UserSession.username = username
+        UserSession.role = role
         self.accept()
 
     def open_register_dialog(self):
@@ -72,5 +74,6 @@ class LoginDialog(QDialog):
 
             self.username = dialog.username
             self.role = dialog.role
-
+            UserSession.username = self.username
+            UserSession.role = self.role
             self.accept()

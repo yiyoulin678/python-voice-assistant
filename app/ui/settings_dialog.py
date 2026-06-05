@@ -98,6 +98,8 @@ from app.voice.tts import (
 from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
 from sdk.types import ToolsTabContribution
 
+from app.auth.session import UserSession
+from app.ui.user_management_tab import UserManagementTab
 
 class ApiConnectionTestWorker(QObject):
     succeeded = Signal(str)
@@ -271,6 +273,13 @@ class SettingsDialog(QDialog):
             "工具",
         )
         tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
+
+        if UserSession.role == "admin":
+            tabs.addTab(
+                UserManagementTab(),
+                "用户管理"
+            )
+        
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
 
