@@ -73,6 +73,7 @@ class AgentRuntime:
         self.memory = memory or MemoryStore()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
+        self.strict_ja_zh_correspondence_enabled = False
 
     def update_character(
         self,
@@ -93,6 +94,10 @@ class AgentRuntime:
         """允许模型在对话或主动事件中自主决定是否观察屏幕。"""
         self.autonomous_screen_observation_enabled = enabled
 
+    def set_strict_ja_zh_correspondence_enabled(self, enabled: bool) -> None:
+        """启用后要求 ja/zh 逐语气完全对应，并触发修复重试。"""
+        self.strict_ja_zh_correspondence_enabled = bool(enabled)
+
     def _parse_final_reply_with_retry(
         self,
         system_prompt: str,
@@ -100,7 +105,10 @@ class AgentRuntime:
         raw_content: str,
     ) -> ChatReply:
         """最终回复结构不合格时，只重试一次格式修复，避免坏 JSON 进入 UI。"""
-        parsed = parse_chat_reply_result(raw_content)
+        parsed = parse_chat_reply_result(
+            raw_content,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
+        )
         if not parsed.needs_retry:
             return parsed.reply
 
@@ -114,12 +122,9 @@ class AgentRuntime:
             {"role": "assistant", "content": raw_content},
             {
                 "role": "user",
-                "content": (
-                    "上一条 assistant 输出不是合格的 Mutsuki 回复 JSON。"
-                    "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
-                    "格式必须是 {\"segments\":[{\"ja\":\"自然日语\",\"zh\":\"中文译文\","
-                    "\"tone\":\"中性\",\"portrait\":\"站立待机\"}]}。"
-                    "ja 字段只能写自然日语，不能包含中文。"
+                "content": _build_agent_reply_repair_message(
+                    parsed.reason,
+                    self.strict_ja_zh_correspondence_enabled,
                 ),
             },
         ]
@@ -136,7 +141,10 @@ class AgentRuntime:
             debug_log("AgentRuntime", "最终回复修复请求失败，使用安全兜底", {"error": str(exc)})
             return parsed.reply
 
-        repaired = parse_chat_reply_result(repaired_turn.content)
+        repaired = parse_chat_reply_result(
+            repaired_turn.content,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
+        )
         if repaired.needs_retry:
             debug_log(
                 "AgentRuntime",
@@ -561,6 +569,7 @@ class AgentRuntime:
                 working_messages,
                 self.reply_tones,
                 self.reply_portraits,
+                strict_correspondence=self.strict_ja_zh_correspondence_enabled,
             )
         except Exception as exc:
             print(f"[AgentRuntime] 工具结果总结失败，使用本地兜底回复：{exc}")
@@ -656,6 +665,7 @@ class AgentRuntime:
                 ],
                 self.reply_tones,
                 self.reply_portraits,
+                strict_correspondence=self.strict_ja_zh_correspondence_enabled,
             )
         except Exception as exc:
             print(f"[AgentRuntime] 确认动作总结失败，使用本地兜底回复：{exc}")
@@ -739,6 +749,7 @@ class AgentRuntime:
                 event_messages,
                 self.reply_tones,
                 self.reply_portraits,
+                strict_correspondence=self.strict_ja_zh_correspondence_enabled,
             )
         except ApiRequestError as exc:
             if messages_contain_image(event_messages) and is_vision_unsupported_error(exc):
@@ -761,7 +772,11 @@ class AgentRuntime:
     ) -> str:
         memory_summary = self._memory_summary()
         current_time = datetime.now().astimezone().isoformat(timespec="seconds")
-        reply_protocol = build_agent_reply_protocol(self.reply_tones, self.reply_portraits)
+        reply_protocol = build_agent_reply_protocol(
+            self.reply_tones,
+            self.reply_portraits,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
+        )
         context_strategy = build_context_acquisition_strategy(
             allow_screen_observation=allow_screen_observation
         )
@@ -851,6 +866,7 @@ class AgentRuntime:
             self.reply_tones,
             self.reply_portraits,
             event_type=event_type,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
         )
 
     def _memory_summary(self) -> str:
@@ -2155,6 +2171,24 @@ def _build_proactive_vision_unsupported_reply() -> ChatReply:
         )
     )
 
+
+
+def _build_agent_reply_repair_message(reason: str, strict_correspondence: bool) -> str:
+    base = (
+        "上一条 assistant 输出不是合格的 Mutsuki 回复 JSON。"
+        "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
+        '格式必须是 {"segments":[{"ja":"自然日语","zh":"中文译文","tone":"中性","portrait":"站立待机"}]}。'
+        "ja 字段只能写自然日语，不能包含中文。"
+    )
+    if reason == "correspondence_issue" or strict_correspondence:
+        return (
+            f"{base}"
+            "当前启用了完全对应模式：ja 与 zh 必须语气、句意完全对应，"
+            "禁止概括缩写或只写主干；语气词、因果转折和补充说明都不能只在一边出现。"
+        )
+    if reason == "language_issue":
+        return f"{base}请确保 ja 字段只写自然日语。"
+    return base
 
 
 def _build_debug_meta(

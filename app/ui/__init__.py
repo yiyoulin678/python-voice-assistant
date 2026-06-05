@@ -8,6 +8,7 @@ from app.ui.manual_screenshot_overlay import (
 from app.ui.portrait_controller import PortraitController
 from app.ui.screen_capture import capture_virtual_desktop_pixmap
 from app.ui.styles import PET_WINDOW_STYLEHEET
+from app.ui.themes import build_pet_window_stylesheet
 from app.ui.subtitle_controller import SubtitleController
 from app.ui.tool_confirmation_panel import ToolConfirmationPanel
 from app.ui.tray_menu import build_pet_tray_menu
@@ -19,6 +20,7 @@ __all__ = [
     "PortraitController",
     "capture_virtual_desktop_pixmap",
     "PET_WINDOW_STYLEHEET",
+    "build_pet_window_stylesheet",
     "SubtitleController",
     "ToolConfirmationPanel",
     "build_pet_tray_menu",

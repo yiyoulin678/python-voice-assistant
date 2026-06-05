@@ -150,6 +150,7 @@ class Live2DWidget(QOpenGLWidget):
         self._persistent_expression_id = expression_id
         self._model.ResetExpression()
         self._model.SetExpression(expression_id)
+        self._restore_expression_overlays()
         self._resume_idle_motion(force=True)
         self.update()
 
@@ -184,6 +185,7 @@ class Live2DWidget(QOpenGLWidget):
         self._model.ResetExpression()
         if self._persistent_expression_id:
             self._model.SetExpression(self._persistent_expression_id)
+        self._restore_expression_overlays()
         if restart_motion:
             self._resume_idle_motion(force=True)
         self.update()
@@ -224,6 +226,14 @@ class Live2DWidget(QOpenGLWidget):
             return
         for expression_id in overlays:
             self._model.RemoveExpression(expression_id)
+
+    def _restore_expression_overlays(self) -> None:
+        if not self._ready or self._model is None or not self._overlay_expressions:
+            return
+        known_ids = set(self._discover_expression_ids())
+        for expression_id in self._overlay_expressions:
+            if expression_id in known_ids:
+                self._model.AddExpression(expression_id)
 
     def reload_config(self, live2d_config: CharacterLive2D) -> None:
         self._live2d_config = live2d_config
@@ -355,6 +365,7 @@ class Live2DWidget(QOpenGLWidget):
         self._model.SetAutoBreathEnable(True)
         self._model.SetAutoBlinkEnable(False)
         self._start_idle_motion()
+        self._restore_expression_overlays()
         if self._on_ready is not None:
             self._on_ready()
 

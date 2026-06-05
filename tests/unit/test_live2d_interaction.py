@@ -21,6 +21,5 @@ def test_handle_tap_plays_expression() -> None:
     )
     controller._started = True
     controller.handle_tap(100.0, 200.0)
-    widget.set_expression.assert_called_once()
-    assert widget.set_expression.call_args.kwargs.get("hold_motion") is True
+    widget.show_fleeting_expression.assert_called_once()
     widget.update.assert_called_once()

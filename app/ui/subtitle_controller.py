@@ -37,6 +37,7 @@ class SubtitleController(QObject):
         parent: QObject | None = None,
         preload_segment: SegmentCallback | None = None,
         on_segment_completed: SegmentCallback | None = None,
+        on_reply_flow_cancelled: Callable[[], None] | None = None,
         typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
         segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
     ) -> None:
@@ -50,6 +51,7 @@ class SubtitleController(QObject):
         self._should_complete_reply = should_complete_reply
         self._preload_segment = preload_segment
         self._on_segment_completed = on_segment_completed
+        self._on_reply_flow_cancelled = on_reply_flow_cancelled
 
         self.speech_text = ""
         self.speech_index = 0
@@ -109,6 +111,8 @@ class SubtitleController(QObject):
         self.pending_reply_segments = []
         self.queued_reply_segment_batches = []
         self.reset_current_segment_progress()
+        if self._on_reply_flow_cancelled is not None:
+            self._on_reply_flow_cancelled()
         if placeholder_text is not None:
             self.set_speech(placeholder_text)
 
@@ -348,7 +352,8 @@ class SubtitleController(QObject):
             return
 
         self.speech_index += 1
-        self.speech_label.setText(self.speech_text[: self.speech_index])
+        partial_text = self.speech_text[: self.speech_index]
+        self.speech_label.setText(partial_text)
         if self.speech_index >= len(self.speech_text):
             self.speech_timer.stop()
             if self.current_segment_sequence_id is not None:

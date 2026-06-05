@@ -24,6 +24,7 @@ from app.agent.screen_observation import (
 )
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 from app.llm.chat_reply import parse_chat_reply_result
+from app.ui.themes import DEFAULT_UI_THEME, build_history_window_stylesheet, normalize_ui_theme
 
 
 _VISUAL_ID_SUFFIX_RE = re.compile(r"，视觉记录\s+visual_id=[^\]\s]+")
@@ -41,6 +42,7 @@ class HistoryEntryView:
     bubble_object_name: str
     meta_text: str
     content: str
+    show_play_button: bool = False
 
 
 class HistoryWindow(QDialog):
@@ -49,13 +51,18 @@ class HistoryWindow(QDialog):
         history_store: ChatHistoryStore,
         subtitle_language: str = "ja",
         on_save_and_clear: Callable[[], None] | None = None,
+        on_play_audio: Callable[[ChatHistoryEntry], None] | None = None,
         parent=None,  # type: ignore[no-untyped-def]
+        ui_theme: str = DEFAULT_UI_THEME,
     ) -> None:
         super().__init__(parent)
         self.history_store = history_store
         self.subtitle_language = subtitle_language
+        self._ui_theme = normalize_ui_theme(ui_theme)
         self.on_save_and_clear = on_save_and_clear
+        self.on_play_audio = on_play_audio
         self._bubble_frames: list[QFrame] = []
+        self._play_buttons: list[QPushButton] = []
 
         self.setWindowTitle("历史记录")
         self.resize(620, 680)
@@ -114,111 +121,15 @@ class HistoryWindow(QDialog):
         layout.addLayout(button_layout)
         self.setLayout(layout)
 
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #fff6fa;
-                color: #3d2b35;
-                font-family: "Microsoft YaHei", "Yu Gothic UI", sans-serif;
-                font-size: 16px;
-            }
-            QLabel#historyTitle {
-                color: #7a3656;
-                font-size: 22px;
-                font-weight: 700;
-            }
-            QLabel#historyCount {
-                color: #9b4f72;
-                background: rgba(255, 232, 241, 0.78);
-                border: 1px solid rgba(238, 172, 200, 0.48);
-                border-radius: 12px;
-                padding: 5px 10px;
-                font-size: 13px;
-            }
-            QScrollArea#historyScroll {
-                background: rgba(255, 244, 249, 0.94);
-                border: 1px solid rgba(238, 172, 200, 0.54);
-                border-radius: 14px;
-            }
-            QWidget#historyContent {
-                background: transparent;
-            }
-            QFrame#assistantBubble {
-                background: #fffafd;
-                border: 1px solid #f1c7d9;
-                border-radius: 14px;
-            }
-            QFrame#userBubble {
-                background: #ffe3ee;
-                border: 1px solid #eeb0ca;
-                border-radius: 14px;
-            }
-            QFrame#errorBubble {
-                background: #ffe9e7;
-                border: 1px solid #efc2bd;
-                border-radius: 14px;
-            }
-            QFrame#systemBubble {
-                background: #fff0f6;
-                border: 1px solid #efd0dc;
-                border-radius: 12px;
-            }
-            QLabel#entryMeta {
-                color: #a0647f;
-                font-size: 13px;
-            }
-            QLabel#entryText {
-                color: #3d2b35;
-                font-size: 16px;
-                line-height: 155%;
-            }
-            QLabel#errorText {
-                color: #9f393a;
-                font-size: 16px;
-                line-height: 155%;
-            }
-            QLabel#systemText {
-                color: #7e5d6b;
-                font-size: 15px;
-                line-height: 155%;
-            }
-            QPushButton {
-                background: rgba(255, 255, 255, 0.90);
-                border: 1px solid rgba(238, 172, 200, 0.58);
-                border-radius: 8px;
-                color: #7a3656;
-                min-width: 72px;
-                padding: 8px 12px;
-                font-size: 15px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: rgba(255, 232, 241, 0.96);
-                border: 1px solid rgba(213, 91, 145, 0.62);
-            }
-            QPushButton#dangerButton {
-                background: #fff1f5;
-                border: 1px solid rgba(199, 88, 122, 0.52);
-                color: #b13e5a;
-            }
-            QPushButton#dangerButton:hover {
-                background: #ffe1ea;
-            }
-            QPushButton#primaryButton {
-                background: #d55b91;
-                border: 1px solid rgba(177, 62, 115, 0.55);
-                color: white;
-            }
-            QPushButton#primaryButton:hover {
-                background: #bf3f7a;
-            }
-            QPushButton#secondaryButton:default {
-                background: #d55b91;
-                color: white;
-            }
-            """
-        )
+        self._apply_ui_theme(self._ui_theme)
         self.refresh()
+
+    def set_ui_theme(self, ui_theme: str) -> None:
+        self._ui_theme = normalize_ui_theme(ui_theme)
+        self._apply_ui_theme(self._ui_theme)
+
+    def _apply_ui_theme(self, ui_theme: str) -> None:
+        self.setStyleSheet(build_history_window_stylesheet(ui_theme))
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
@@ -298,8 +209,12 @@ class HistoryWindow(QDialog):
         self.refresh_button.setEnabled(not busy)
         self.save_and_clear_button.setText("整理中..." if busy else "清除并保存至记忆")
 
+    def set_play_audio_handler(self, on_play_audio: Callable[[ChatHistoryEntry], None] | None) -> None:
+        self.on_play_audio = on_play_audio
+
     def _clear_entries(self) -> None:
         self._bubble_frames.clear()
+        self._play_buttons.clear()
         while self.history_layout.count():
             item = self.history_layout.takeAt(0)
             widget = item.widget()
@@ -354,6 +269,19 @@ class HistoryWindow(QDialog):
 
         bubble_layout.addWidget(content_label)
         entry_column_layout.addWidget(bubble)
+
+        if view.show_play_button and self.on_play_audio is not None:
+            play_row = QWidget(entry_column)
+            play_row_layout = QHBoxLayout(play_row)
+            play_row_layout.setContentsMargins(0, 0, 0, 0)
+            play_row_layout.setSpacing(0)
+            play_button = QPushButton("播放语音", play_row)
+            play_button.setObjectName("historyPlayButton")
+            play_button.clicked.connect(lambda _checked=False, item=entry: self.on_play_audio(item))  # type: ignore[misc]
+            play_row_layout.addWidget(play_button)
+            play_row_layout.addStretch(1)
+            entry_column_layout.addWidget(play_row)
+            self._play_buttons.append(play_button)
 
         if view.align == "right":
             row_layout.addStretch(1)
@@ -411,6 +339,7 @@ def _entry_view_model(
         bubble_object_name=bubble_object_name,
         meta_text=f"{role_name} · {time_text}",
         content=_humanize_history_content(_entry_display_content(entry, subtitle_language)),
+        show_play_button=entry.role == "assistant" and bool(entry.content.strip()),
     )
 
 

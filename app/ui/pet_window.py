@@ -117,7 +117,7 @@ from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui import (
     FrostedGlassFrame,
     ManualScreenshotOverlay,
-    PET_WINDOW_STYLEHEET,
+    build_pet_window_stylesheet,
     SubtitleController,
     ToolConfirmationPanel,
     build_pet_tray_menu,
@@ -126,8 +126,10 @@ from app.ui import (
 from app.media.music_sing_along import MusicSingAlongController
 from app.media.now_playing import set_preferred_music_source
 from app.ui.music_lyrics_overlay import LYRICS_OVERLAY_HEIGHT, MusicLyricsOverlay
+from app.storage.chat_audio import archive_chat_audio
 from app.voice import VoicePlaybackController
 from app.voice import audio_io, speech_to_text
+from app.voice.history_audio_player import HistoryAudioPlayer
 from app.voice.stt_settings import STTSettings
 from app.voice.voice_workers import (
     StartRecordingWorker,
@@ -207,6 +209,14 @@ class PetWindow(QWidget):
         self.music_default_source = pet_ui_settings.music_default_source
         self.lyric_sync_offset_seconds = pet_ui_settings.lyric_sync_offset_seconds
         self.music_sing_along_enabled = pet_ui_settings.music_sing_along_enabled
+        self.ui_theme = pet_ui_settings.ui_theme
+        self.desktop_pet_rules_enabled = pet_ui_settings.desktop_pet_rules_enabled
+        self.strict_ja_zh_correspondence_enabled = (
+            pet_ui_settings.strict_ja_zh_correspondence_enabled
+        )
+        self.agent_runtime.set_strict_ja_zh_correspondence_enabled(
+            self.strict_ja_zh_correspondence_enabled
+        )
         set_preferred_music_source(pet_ui_settings.music_default_source)
         self.music_lyrics_overlay: MusicLyricsOverlay | None = None
         self._music_sing_along_controller: MusicSingAlongController | None = None
@@ -237,6 +247,8 @@ class PetWindow(QWidget):
             print(f"[STT] 初始化音频路径失败: {exc}")
         self._voice_recording = False
         self._voice_rec_starting = False
+        self._voice_from_long_press = False
+        self._voice_long_press_cancel_pending = False
         self._voice_rec_worker: QObject | None = None
         self._voice_transcribe_thread: QThread | None = None
         self._voice_transcribe_worker: QObject | None = None
@@ -396,6 +408,8 @@ class PetWindow(QWidget):
             lambda: str(getattr(getattr(self.tts_provider, "settings", None), "text_lang", "ja")),
             self._show_tts_error,
         )
+        self.history_audio_player = HistoryAudioPlayer(self)
+        self._active_segment_audio_path: str | None = None
         self._connect_tts_error_signal(self.tts_provider)
         self.subtitle_controller = SubtitleController(
             self.speech_label,
@@ -403,11 +417,12 @@ class PetWindow(QWidget):
             self.subtitle_language,
             self._log_interaction_stage,
             self._apply_reply_segment,
-            lambda: self._end_interaction("reply_completed"),
+            self._finish_reply_interaction,
             lambda: bool(self.active_interaction_id),
             self,
             preload_segment=self.portrait_controller.preload_for_segment,
-            on_segment_completed=self._record_assistant_segment_note,
+            on_segment_completed=self._on_reply_segment_completed,
+            on_reply_flow_cancelled=self._end_live2d_speech,
             typing_interval_ms=self.subtitle_typing_interval_ms,
             segment_pause_ms=self.reply_segment_pause_ms,
         )
@@ -510,7 +525,7 @@ class PetWindow(QWidget):
             )
         self._ensure_music_sing_along_controller()
 
-        self.setStyleSheet(PET_WINDOW_STYLEHEET)
+        self._apply_ui_theme(self.ui_theme)
         self._apply_fonts()
         self._load_reply_history_from_store()
         self._update_reply_history_buttons()
@@ -521,6 +536,10 @@ class PetWindow(QWidget):
         self.portrait_controller.apply_current()
         if self._using_live2d:
             self._init_live2d_hover_ui()
+            if self.stt_settings.enabled and hasattr(self, "voice_button"):
+                self.voice_button.setToolTip(
+                    "点击开始/结束录音；或长按安安说话，松手结束并识别"
+                )
         else:
             self._sync_stage_height_for_layout()
             if (self.width(), self.height()) != self.stage_size:
@@ -703,8 +722,25 @@ class PetWindow(QWidget):
             controller.trigger_tap(local_pos.x(), local_pos.y())
 
     def _apply_reply_segment(self, segment: ChatSegment) -> None:
+        controller = self.portrait_controller
+        if isinstance(controller, Live2DPortraitController):
+            controller.begin_speech_segment()
+            controller.attach_speech_audio(None)
         self.portrait_controller.apply_for_segment(segment)
         self._sync_reply_history_index_for_segment(segment)
+
+    def _end_live2d_speech(self) -> None:
+        controller = self.portrait_controller
+        if isinstance(controller, Live2DPortraitController):
+            controller.end_speech()
+
+    def _finish_reply_interaction(self) -> None:
+        self._end_live2d_speech()
+        self._end_interaction("reply_completed")
+
+    def _on_reply_segment_completed(self, segment: ChatSegment) -> None:
+        self._record_assistant_segment_note(segment)
+        self._archive_segment_audio_to_history(segment)
 
     def _record_assistant_segment_note(self, segment: ChatSegment) -> None:
         text = segment.display_text(self.subtitle_language).strip()
@@ -721,6 +757,51 @@ class PetWindow(QWidget):
                 handle.write(block)
         except OSError as exc:
             debug_log("PetWindow", "台词笔记写入失败", {"path": str(note_path), "error": str(exc)})
+
+    def _archive_segment_audio_to_history(self, segment: ChatSegment) -> None:
+        audio_path = self._active_segment_audio_path
+        if not audio_path:
+            return
+        source = Path(audio_path)
+        self._active_segment_audio_path = None
+        if not source.exists():
+            return
+        try:
+            relative_path = archive_chat_audio(
+                source,
+                self.base_dir,
+                self.character_profile.id,
+            )
+            attached = self.history_store.attach_audio_to_latest_matching_assistant(
+                segment.text,
+                segment.translation,
+                segment.tone,
+                segment.portrait,
+                relative_path,
+            )
+            debug_log(
+                "History",
+                "归档分段语音",
+                {
+                    "attached": attached,
+                    "audio_path": relative_path,
+                    "text": segment.text,
+                },
+            )
+            history_window = getattr(self, "history_window", None)
+            if (
+                attached
+                and history_window is not None
+                and history_window.isVisible()
+            ):
+                history_window.refresh()
+        except OSError as exc:
+            print(f"[History] 语音归档失败：{exc}")
+            debug_log(
+                "History",
+                "语音归档失败",
+                {"audio_path": audio_path, "error": str(exc)},
+            )
 
     def _remember_reply_history_segments(self, segments: list[ChatSegment]) -> None:
         clean_segments = [segment for segment in segments if segment.text.strip()]
@@ -879,6 +960,12 @@ class PetWindow(QWidget):
         self.input_edit.setFont(text_font)
         self.screenshot_button.setFont(button_font)
         self.send_button.setFont(button_font)
+
+    def _apply_ui_theme(self, ui_theme: str) -> None:
+        self.ui_theme = ui_theme
+        self.setStyleSheet(build_pet_window_stylesheet(ui_theme))
+        if self.history_window is not None:
+            self.history_window.set_ui_theme(ui_theme)
 
     def _apply_speech_font(self) -> None:
         if self.subtitle_language == SUBTITLE_LANGUAGE_ZH:
@@ -1321,6 +1408,25 @@ class PetWindow(QWidget):
         )
 
     @Slot()
+    def _on_live2d_long_press_start(self) -> None:
+        self._mark_user_activity()
+        if not self._voice_input_available():
+            return
+        if self._voice_recording or self._voice_rec_starting:
+            return
+        self._voice_from_long_press = True
+        self._start_voice_recording()
+
+    def _on_live2d_long_press_end(self) -> None:
+        if not self._voice_from_long_press:
+            return
+        self._voice_from_long_press = False
+        if self._voice_recording:
+            self._stop_voice_recording()
+            return
+        if self._voice_rec_starting:
+            self._voice_long_press_cancel_pending = True
+
     def _handle_voice_button_clicked(self) -> None:
         self._mark_user_activity()
         if not self._voice_input_available():
@@ -1345,6 +1451,15 @@ class PetWindow(QWidget):
     @Slot(bool, str)
     def _on_voice_recording_started(self, ok: bool, message: str) -> None:
         self._voice_rec_starting = False
+        if self._voice_long_press_cancel_pending:
+            self._voice_long_press_cancel_pending = False
+            if ok:
+                self._voice_recording = True
+                self._update_voice_button()
+                self._stop_voice_recording()
+            else:
+                self._update_voice_button()
+            return
         if not ok:
             if self._voice_recording:
                 try:
@@ -1362,6 +1477,7 @@ class PetWindow(QWidget):
     def _stop_voice_recording(self) -> None:
         if not self._voice_recording:
             return
+        self._voice_from_long_press = False
         self._voice_recording = False
         self._update_voice_button()
         self.set_speech("正在识别…")
@@ -2590,15 +2706,16 @@ class PetWindow(QWidget):
 
     @Slot(str)
     def _on_tts_playback_started(self, audio_path: str) -> None:
+        self._active_segment_audio_path = audio_path
         if not isinstance(self.portrait_controller, Live2DPortraitController):
             return
-        self.portrait_controller.begin_speech(audio_path)
+        self.portrait_controller.attach_speech_audio(audio_path)
 
     @Slot()
     def _on_tts_playback_ended(self) -> None:
         if not isinstance(self.portrait_controller, Live2DPortraitController):
             return
-        self.portrait_controller.end_speech()
+        self.portrait_controller.detach_speech_audio()
 
     def _warm_up_current_tts_playback(self) -> None:
         self._warm_up_tts_playback(self.tts_provider)
@@ -2684,6 +2801,39 @@ class PetWindow(QWidget):
             self.show()
             self.raise_()
 
+    def _resolve_history_audio_path(self, entry: ChatHistoryEntry) -> Path | None:
+        audio_path = entry.audio_path.strip()
+        if not audio_path:
+            return None
+        resolved = Path(audio_path)
+        if not resolved.is_absolute():
+            resolved = self.base_dir / resolved
+        return resolved if resolved.exists() else None
+
+    def _play_history_entry_audio(self, entry: ChatHistoryEntry) -> None:
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "播放不可用", "当前正在处理回复，请稍后再试。")
+            return
+        if self.subtitle_controller.is_reply_sequence_active():
+            QMessageBox.information(self, "播放不可用", "当前正在播报回复，请稍后再试。")
+            return
+
+        archived_audio = self._resolve_history_audio_path(entry)
+        if archived_audio is not None:
+            if self.history_audio_player.play(archived_audio):
+                return
+            QMessageBox.warning(self, "播放失败", "历史语音文件无法播放，将尝试重新合成。")
+
+        text = _history_entry_tts_text(entry)
+        if not text:
+            QMessageBox.information(self, "无法播放", "这条记录没有可朗读的内容。")
+            return
+        tone = entry.tone.strip() or None
+        try:
+            self.tts_provider.speak(text, tone)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "播放失败", f"语音合成失败：{exc}")
+
     @Slot()
     def show_history(self) -> None:
         if self.history_window is None:
@@ -2691,8 +2841,12 @@ class PetWindow(QWidget):
                 self.history_store,
                 self.subtitle_language,
                 self._save_history_to_memory_and_clear,
+                self._play_history_entry_audio,
                 self,
+                ui_theme=self.ui_theme,
             )
+        self.history_window.set_play_audio_handler(self._play_history_entry_audio)
+        self.history_window.set_ui_theme(self.ui_theme)
         self.history_window.set_subtitle_language(self.subtitle_language)
         self.history_window.refresh()
         self.history_window.show()
@@ -2843,6 +2997,10 @@ class PetWindow(QWidget):
                     ),
                     "music_sing_along_enabled": (
                         dialog.result_pet_ui_settings.music_sing_along_enabled
+                    ),
+                    "ui_theme": dialog.result_pet_ui_settings.ui_theme,
+                    "desktop_pet_rules_enabled": (
+                        dialog.result_pet_ui_settings.desktop_pet_rules_enabled
                     ),
                 },
             )
@@ -3175,6 +3333,29 @@ class PetWindow(QWidget):
             self.free_access_enabled = normalized.free_access_enabled
             self.tool_registry.set_free_access_enabled(self.free_access_enabled)
         self._apply_music_plugin_settings(normalized)
+        if normalized.ui_theme != self.ui_theme:
+            self._apply_ui_theme(normalized.ui_theme)
+        if normalized.desktop_pet_rules_enabled != self.desktop_pet_rules_enabled:
+            self.desktop_pet_rules_enabled = normalized.desktop_pet_rules_enabled
+            self.system_prompt = load_character_system_prompt(
+                self.character_profile,
+                append_desktop_pet_rules=self.desktop_pet_rules_enabled,
+            )
+            self.agent_runtime.update_character(
+                self.system_prompt,
+                self.character_profile.reply_tones,
+                self.character_profile.portrait_choices,
+            )
+        if (
+            normalized.strict_ja_zh_correspondence_enabled
+            != self.strict_ja_zh_correspondence_enabled
+        ):
+            self.strict_ja_zh_correspondence_enabled = (
+                normalized.strict_ja_zh_correspondence_enabled
+            )
+            self.agent_runtime.set_strict_ja_zh_correspondence_enabled(
+                self.strict_ja_zh_correspondence_enabled
+            )
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
 
@@ -3348,6 +3529,10 @@ class PetWindow(QWidget):
             overlay = controller.input_overlay
             overlay.bind_mouse_handler(self._handle_live2d_portrait_mouse)
             overlay.bind_tap_handler(self._trigger_live2d_tap)
+            overlay.bind_long_press_handlers(
+                self._on_live2d_long_press_start,
+                self._on_live2d_long_press_end,
+            )
             return controller
 
         if profile.live2d is not None:
@@ -3372,6 +3557,8 @@ class PetWindow(QWidget):
     def _replace_portrait_controller(self, profile: CharacterProfile) -> None:
         old_controller = getattr(self, "portrait_controller", None)
         if old_controller is not None and getattr(self, "_using_live2d", False):
+            if isinstance(old_controller, Live2DPortraitController):
+                old_controller.dispose()
             for widget in (old_controller.live2d_widget, old_controller.input_overlay):
                 widget.removeEventFilter(self)
                 widget.hide()
@@ -3391,6 +3578,7 @@ class PetWindow(QWidget):
         subtitle_controller = getattr(self, "subtitle_controller", None)
         if subtitle_controller is not None:
             subtitle_controller.preload_segment = self.portrait_controller.preload_for_segment
+        self._apply_speech_font()
 
     def _refresh_input_backdrop_sources(self) -> None:
         widgets: list[QWidget] = [self.portrait_controller.portrait_stage_widget]
@@ -3453,7 +3641,10 @@ class PetWindow(QWidget):
     def _apply_character(self, profile: CharacterProfile) -> None:
         previous_character_id = self.character_profile.id
         self.character_profile = profile
-        self.system_prompt = load_character_system_prompt(profile)
+        self.system_prompt = load_character_system_prompt(
+            profile,
+            append_desktop_pet_rules=self.desktop_pet_rules_enabled,
+        )
         self.memory_store.set_scope(profile.id)
         self.agent_runtime.update_character(self.system_prompt, profile.reply_tones, profile.portrait_choices)
         self.setWindowTitle(profile.display_name)
@@ -3690,6 +3881,16 @@ def _last_user_message_index(messages: list[dict[str, Any]]) -> int | None:
         if messages[index].get("role") == "user":
             return index
     return None
+
+
+def _history_entry_tts_text(entry: ChatHistoryEntry) -> str:
+    text = entry.content.strip()
+    if not text:
+        return ""
+    recovered = parse_chat_reply_result(text)
+    if not recovered.needs_retry and recovered.reply.text.strip():
+        return recovered.reply.text.strip()
+    return text
 
 
 def _reply_history_segments_from_entries(entries: list[ChatHistoryEntry]) -> list[ChatSegment]:

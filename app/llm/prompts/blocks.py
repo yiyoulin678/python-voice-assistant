@@ -79,6 +79,26 @@ def translation_rules_block() -> PromptBlock:
     )
 
 
+def strict_translation_rules_block() -> PromptBlock:
+    return PromptBlock(
+        None,
+        "\n".join(
+            [
+                "- 【完全对应模式】ja 与 zh 必须逐句、逐语气、逐句意完全对应，保证字幕与日语 TTS 听感一致。",
+                "- 禁止概括、缩写、只写结论而省略原因/条件/补充说明；两边信息量必须对等，不能一边写长句一边写短句。",
+                "- 所有语气词、停顿、感叹、省略号都必须同时出现在 ja 和 zh 中，禁止只写在一边。",
+                "- 若 zh 以「嗯，」「那个，」「啊，」等开头，ja 必须以「うん、」「えっと、」「あ、」等自然日语语气开头对应。",
+                "- 若 ja 以「えっと、」「あの、」「うん、」等开头，zh 也必须写出等价语气词，不能只写后半句。",
+                "- 句末语气（如 zh 的「呢」「吧」「啊」与 ja 的「ね」「よ」「か」）要成对出现，不能一边省略。",
+                "- zh 含「因为/所以/但是/如果/而且」等连接时，ja 也必须写出对应因果、转折或并列，不能只留主干。",
+                "- 若 zh 用「……」分成多段（如「嗯……好……再……」），ja 也必须保留同样段数和停顿，不能只写最后一句。",
+                "- ja 只写自然日语，禁止中文；zh 只写 ja 的忠实完整译文，禁止多加解释、旁白，也禁止比 ja 更完整。",
+                "- JSON 字符串内部需要提到引号时，使用「かぎ括弧」或中文说明，不要直接写未转义的双引号。",
+            ]
+        ),
+    )
+
+
 def build_segment_protocol(
     tones: list[str],
     portraits: list[str],
@@ -86,6 +106,7 @@ def build_segment_protocol(
     format_text: str,
     segment_rules: str,
     include_translation_rules: bool,
+    strict_correspondence: bool = False,
 ) -> str:
     blocks = [
         json_only_block(),
@@ -95,7 +116,10 @@ def build_segment_protocol(
         blocks.append(segment_rules_block(segment_rules))
     blocks.append(reply_label_constraints_block(tones, portraits))
     if include_translation_rules:
-        blocks.append(translation_rules_block())
+        if strict_correspondence:
+            blocks.append(strict_translation_rules_block())
+        else:
+            blocks.append(translation_rules_block())
     return render_blocks(blocks)
 
 

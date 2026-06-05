@@ -56,7 +56,18 @@ from app.config.deskpet_settings import (
 )
 from app.config.settings_service import AppSettingsService, DebugLogSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.character_loader import (
+    CharacterConfigError,
+    CharacterProfile,
+    CharacterRegistry,
+    read_character_card,
+    write_character_card,
+)
+from app.ui.themes import (
+    UI_THEME_CHOICES,
+    build_settings_dialog_stylesheet,
+    ui_theme_palette,
+)
 from app.ui.portrait_controller import (
     PORTRAIT_SCALE_DEFAULT_PERCENT,
     PORTRAIT_SCALE_MAX_PERCENT,
@@ -249,7 +260,7 @@ class SettingsDialog(QDialog):
         self._syncing_memory_selection = False
 
         self.setWindowTitle("设置")
-        self.resize(600, 520)
+        self.resize(680, 620)
 
         tabs = QTabWidget(self)
         tabs.addTab(self._build_character_tab(character_registry, current_character), "角色")
@@ -286,91 +297,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(tabs, 1)
         layout.addWidget(buttons)
         self.setLayout(layout)
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #fff6fa;
-                color: #3d2b35;
-                font-family: "Microsoft YaHei", "Yu Gothic UI", sans-serif;
-                font-size: 14px;
-            }
-            QTabWidget::pane {
-                border: 1px solid rgba(238, 172, 200, 0.54);
-                border-radius: 8px;
-                background: rgba(255, 232, 241, 0.70);
-            }
-            QTabBar::tab {
-                background: rgba(255, 232, 241, 0.75);
-                border: 1px solid rgba(238, 172, 200, 0.48);
-                border-bottom: none;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                padding: 7px 18px;
-                margin-right: 4px;
-                color: #7a3656;
-            }
-            QTabBar::tab:selected {
-                background: #ffffff;
-                color: #b13e73;
-                font-weight: 700;
-            }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QTableWidget, QComboBox {
-                background: rgba(255, 255, 255, 0.92);
-                border: 1px solid rgba(238, 172, 200, 0.58);
-                border-radius: 7px;
-                padding: 6px 8px;
-                color: #3d2b35;
-                selection-background-color: rgba(213, 91, 145, 0.28);
-            }
-            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QComboBox:focus {
-                border: 1px solid rgba(213, 91, 145, 0.76);
-                background: #ffffff;
-            }
-            QTableWidget {
-                gridline-color: rgba(238, 172, 200, 0.42);
-                alternate-background-color: rgba(255, 244, 249, 0.86);
-            }
-            QHeaderView::section {
-                background: #ffe8f1;
-                border: 1px solid rgba(238, 172, 200, 0.52);
-                color: #7a3656;
-                padding: 6px;
-                font-weight: 700;
-            }
-            QCheckBox {
-                color: #4b3440;
-                spacing: 8px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1px solid rgba(213, 91, 145, 0.68);
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: #d55b91;
-                border: 1px solid #b13e73;
-            }
-            QPushButton {
-                background: #d55b91;
-                border: 1px solid rgba(177, 62, 115, 0.55);
-                border-radius: 8px;
-                color: white;
-                min-width: 72px;
-                padding: 8px 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #bf3f7a;
-            }
-            QPushButton:disabled {
-                background: rgba(213, 91, 145, 0.42);
-                border: 1px solid rgba(238, 172, 200, 0.45);
-                color: rgba(255, 255, 255, 0.76);
-            }
-            """
-        )
+        self._apply_dialog_theme(self.pet_ui_settings.normalized().ui_theme)
 
     def _build_character_tab(
         self,
@@ -378,20 +305,46 @@ class SettingsDialog(QDialog):
         current_character: CharacterProfile | None,
     ) -> QWidget:
         tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(12)
+
         self.character_combo = QComboBox(tab)
         self.character_empty_label = QLabel("尚未导入角色", tab)
         self._refresh_character_combo(
             current_character.id if current_character is not None else None
         )
+        self.character_combo.currentIndexChanged.connect(self._load_selected_character_card)
 
         form_layout = QFormLayout()
-        form_layout.setContentsMargins(16, 18, 16, 16)
+        form_layout.setContentsMargins(0, 0, 0, 0)
         form_layout.setSpacing(12)
         form_layout.addRow("状态", self.character_empty_label)
         form_layout.addRow("当前角色", self.character_combo)
         form_layout.addRow("立绘大小", self._build_portrait_scale_control(tab))
         form_layout.addRow("角色包", self._build_character_archive_controls(tab))
-        tab.setLayout(form_layout)
+        layout.addLayout(form_layout)
+
+        self.desktop_pet_rules_check = QCheckBox(
+            "附加桌宠运行规则（边界、朗读习惯等通用约束，会拼在人设后面）",
+            tab,
+        )
+        normalized_ui = self.pet_ui_settings.normalized()
+        self.desktop_pet_rules_check.setChecked(normalized_ui.desktop_pet_rules_enabled)
+
+        self.character_card_hint = QLabel(
+            "人设会作为系统提示词影响回复风格。切换角色时会加载对应 card 文件，点保存后写入角色包。",
+            tab,
+        )
+        self.character_card_hint.setWordWrap(True)
+        self.character_card_edit = QTextEdit(tab)
+        self.character_card_edit.setPlaceholderText("在此编写角色人设（Markdown 文本）……")
+        self.character_card_edit.setMinimumHeight(240)
+        layout.addWidget(self.desktop_pet_rules_check)
+        layout.addWidget(self.character_card_hint)
+        layout.addWidget(self.character_card_edit, 1)
+
+        self._load_selected_character_card()
         self._sync_character_archive_controls()
         return tab
 
@@ -405,6 +358,13 @@ class SettingsDialog(QDialog):
         )
         self.hover_only_ui_check.setChecked(normalized_ui.hover_only_ui)
 
+        self.ui_theme_combo = QComboBox(tab)
+        for theme_id, label in UI_THEME_CHOICES:
+            self.ui_theme_combo.addItem(label, theme_id)
+        theme_index = self.ui_theme_combo.findData(normalized_ui.ui_theme)
+        self.ui_theme_combo.setCurrentIndex(theme_index if theme_index >= 0 else 0)
+        self.ui_theme_combo.currentIndexChanged.connect(self._on_ui_theme_changed)
+
         self.subtitle_language_combo = QComboBox(tab)
         self.subtitle_language_combo.addItem("中文", SUBTITLE_LANGUAGE_ZH)
         self.subtitle_language_combo.addItem("日本語", SUBTITLE_LANGUAGE_JA)
@@ -413,6 +373,19 @@ class SettingsDialog(QDialog):
         )
         self.subtitle_language_combo.setCurrentIndex(
             language_index if language_index >= 0 else 0
+        )
+
+        self.strict_ja_zh_correspondence_check = QCheckBox(
+            "完全对应（字幕与日语 TTS 语气、句意一致，禁止概括缩写）",
+            tab,
+        )
+        self.strict_ja_zh_correspondence_check.setChecked(
+            normalized_ui.strict_ja_zh_correspondence_enabled
+        )
+        self.strict_ja_zh_correspondence_check.setToolTip(
+            "开启后，模型会被要求让 ja 与 zh 的语气、因果转折和完整句意成对出现；"
+            "若检测到 zh 比 ja 明显更长或只写了一半意思，会自动请求模型修复一次。"
+            "同时 TTS 会整段合成，减少切分丢句。"
         )
 
         normalized_reminders = self.reminder_settings.normalized()
@@ -450,27 +423,50 @@ class SettingsDialog(QDialog):
         )
         self.music_sing_along_enabled_check.setChecked(normalized_ui.music_sing_along_enabled)
 
-        deskpet_hint = QLabel(
+        self.deskpet_hint = QLabel(
             "悬停 UI 仅对 Live2D 角色生效；「锁定界面」后仅立绘区可点，窗口空白处穿透。\n"
             "歌词从 LRCLIB 拉取；网易云 SMTC 无进度，靠本地计时，可用「歌词提前量」微调同步。",
             tab,
         )
-        deskpet_hint.setWordWrap(True)
-        deskpet_hint.setStyleSheet("color: #9b4f72;")
+        self.deskpet_hint.setWordWrap(True)
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.hover_only_ui_check)
+        form_layout.addRow("界面主题", self.ui_theme_combo)
         form_layout.addRow("字幕语言", self.subtitle_language_combo)
+        form_layout.addRow("", self.strict_ja_zh_correspondence_check)
         form_layout.addRow("", self.reminders_enabled_check)
         form_layout.addRow("提醒检查间隔", self.reminder_interval_spin)
         form_layout.addRow("", self.music_plugin_enabled_check)
         form_layout.addRow("歌词提前量", self.lyric_sync_offset_spin)
         form_layout.addRow("", self.music_sing_along_enabled_check)
-        form_layout.addRow(deskpet_hint)
+        form_layout.addRow(self.deskpet_hint)
         tab.setLayout(form_layout)
         return tab
+
+    def _on_ui_theme_changed(self) -> None:
+        if not hasattr(self, "ui_theme_combo"):
+            return
+        theme_id = str(self.ui_theme_combo.currentData() or "")
+        self._apply_dialog_theme(theme_id)
+
+    def _apply_dialog_theme(self, theme_id: str) -> None:
+        self.setStyleSheet(build_settings_dialog_stylesheet(theme_id))
+        palette = ui_theme_palette(theme_id)
+        if hasattr(self, "deskpet_hint"):
+            self.deskpet_hint.setStyleSheet(f"color: {palette.hint_text};")
+        if hasattr(self, "restart_hint"):
+            self.restart_hint.setStyleSheet(f"color: {palette.hint_text};")
+        if hasattr(self, "memory_status_label"):
+            self.memory_status_label.setStyleSheet(f"color: {palette.hint_text};")
+        if hasattr(self, "memory_selection_label"):
+            self.memory_selection_label.setStyleSheet(f"color: {palette.tab_text};")
+        if hasattr(self, "memory_preview_label"):
+            self.memory_preview_label.setStyleSheet(f"color: {palette.system_text};")
+        if hasattr(self, "character_card_hint"):
+            self.character_card_hint.setStyleSheet(f"color: {palette.hint_text};")
 
     def _build_character_archive_controls(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
@@ -777,7 +773,7 @@ class SettingsDialog(QDialog):
             tab,
         )
         restart_hint.setWordWrap(True)
-        restart_hint.setStyleSheet("color: #9b4f72;")
+        self.restart_hint = restart_hint
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
@@ -912,7 +908,6 @@ class SettingsDialog(QDialog):
         self.memory_refresh_button = QPushButton("刷新", tab)
         self.memory_refresh_button.clicked.connect(self._load_memory_entries)
         self.memory_status_label = QLabel("正在加载长期记忆...", tab)
-        self.memory_status_label.setStyleSheet("color: #9b4f72;")
 
         self.memory_table = QTableWidget(0, 4, tab)
         self.memory_table.setHorizontalHeaderLabels(["", "内容", "更新时间", "ID"])
@@ -942,7 +937,6 @@ class SettingsDialog(QDialog):
         self._sync_memory_select_all_check_geometry()
 
         self.memory_selection_label = QLabel("已选择 0 条", tab)
-        self.memory_selection_label.setStyleSheet("color: #7a3656;")
         self.memory_delete_button = QPushButton("删除选中", tab)
         self.memory_delete_button.setEnabled(False)
         self.memory_delete_button.clicked.connect(self._delete_memory_entry)
@@ -951,7 +945,6 @@ class SettingsDialog(QDialog):
         self.memory_clear_selection_button.clicked.connect(self._clear_memory_selection)
         self.memory_preview_label = QLabel("未选择记忆", tab)
         self.memory_preview_label.setWordWrap(True)
-        self.memory_preview_label.setStyleSheet("color: #6d4a5b;")
 
         self.memory_new_button = QPushButton("新增记忆", tab)
         self.memory_new_button.setCheckable(True)
@@ -1477,6 +1470,9 @@ class SettingsDialog(QDialog):
 
         self.result_api_settings = api_settings
         self.result_tts_settings = tts_settings
+        if not self._save_selected_character_card():
+            return
+
         self.result_character_id = character_id
         self.result_portrait_scale_percent = self._selected_portrait_scale_percent()
         (
@@ -1506,6 +1502,9 @@ class SettingsDialog(QDialog):
             music_default_source=pet_ui.music_default_source,
             lyric_sync_offset_seconds=self.lyric_sync_offset_spin.value(),
             music_sing_along_enabled=self.music_sing_along_enabled_check.isChecked(),
+            ui_theme=str(self.ui_theme_combo.currentData() or ""),
+            desktop_pet_rules_enabled=self.desktop_pet_rules_check.isChecked(),
+            strict_ja_zh_correspondence_enabled=self.strict_ja_zh_correspondence_check.isChecked(),
         ).normalized()
         self.result_screen_observation_settings = ScreenObservationSettings(
             enabled=self.screen_observation_enabled_check.isChecked(),
@@ -1810,6 +1809,54 @@ class SettingsDialog(QDialog):
             return self.current_character
         return self.character_registry.get(character_id)
 
+    def _load_selected_character_card(self) -> None:
+        if not hasattr(self, "character_card_edit"):
+            return
+        profile = self._selected_character_profile()
+        if profile is None:
+            self.character_card_edit.clear()
+            self.character_card_edit.setEnabled(False)
+            if hasattr(self, "character_card_hint"):
+                self.character_card_hint.setEnabled(False)
+            return
+        self.character_card_edit.setEnabled(True)
+        if hasattr(self, "character_card_hint"):
+            self.character_card_hint.setEnabled(True)
+        try:
+            content = read_character_card(profile)
+        except CharacterConfigError as exc:
+            self.character_card_edit.setPlainText("")
+            self.character_card_edit.setEnabled(False)
+            if hasattr(self, "character_card_hint"):
+                self.character_card_hint.setText(str(exc))
+            return
+        self.character_card_edit.setPlainText(content)
+        if hasattr(self, "character_card_hint"):
+            palette = ui_theme_palette(
+                str(self.ui_theme_combo.currentData() or "")
+                if hasattr(self, "ui_theme_combo")
+                else None
+            )
+            self.character_card_hint.setStyleSheet(f"color: {palette.hint_text};")
+            self.character_card_hint.setText(
+                f"正在编辑：{profile.display_name}（{profile.card_path.name}）\n"
+                "人设会作为系统提示词影响回复风格。保存后立即作用于后续对话。"
+            )
+
+    def _save_selected_character_card(self) -> bool:
+        if not hasattr(self, "character_card_edit") or not self.character_card_edit.isEnabled():
+            return True
+        profile = self._selected_character_profile()
+        if profile is None:
+            return True
+        content = self.character_card_edit.toPlainText()
+        try:
+            write_character_card(profile, content)
+        except CharacterConfigError as exc:
+            QMessageBox.warning(self, "人设保存失败", str(exc))
+            return False
+        return True
+
     def _selected_portrait_scale_percent(self) -> int:
         if hasattr(self, "portrait_scale_spin"):
             return normalize_portrait_scale_percent(self.portrait_scale_spin.value())
@@ -1839,6 +1886,7 @@ class SettingsDialog(QDialog):
             self.character_empty_label.setVisible(not has_character)
         self.character_combo.blockSignals(False)
         self._sync_character_archive_controls()
+        self._load_selected_character_card()
 
 
 def _is_http_url(url: str) -> bool:

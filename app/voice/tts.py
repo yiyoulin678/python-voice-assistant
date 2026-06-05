@@ -25,6 +25,8 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from app.config.character_loader import CharacterProfile
 from app.llm.chat_reply import DEFAULT_TONE
 from app.core.debug_log import debug_log
+from app.llm.expression_chunks import split_tts_expression_chunks
+from app.voice.wav_merge import merge_wav_files
 
 
 TTSCallback = Callable[[], None]
@@ -62,6 +64,7 @@ class _TTSRequest:
     on_started: TTSCallback | None = None
     on_finished: TTSCallback | None = None
     prepared_audio: TTSPreparedAudio | None = None
+    expression_chunks: tuple[str, ...] = ()
 
 
 class TTSProvider(Protocol):
@@ -327,13 +330,19 @@ class GPTSoVITSTTSProvider(QObject):
             self._started.emit(on_started)
             self._finished.emit(on_finished)
             return
-        debug_log("TTS", "提交播放请求", {"text": text, "tone": tone})
+        chunks = split_tts_expression_chunks(text)
+        debug_log(
+            "TTS",
+            "提交播放请求",
+            {"text": text, "tone": tone, "expression_chunks": len(chunks)},
+        )
         self._queue_request(
             _TTSRequest(
                 text=text,
                 tone=tone,
                 on_started=on_started,
                 on_finished=on_finished,
+                expression_chunks=tuple(chunks) if len(chunks) > 1 else (),
             )
         )
 
@@ -344,8 +353,20 @@ class GPTSoVITSTTSProvider(QObject):
             debug_log("TTS", "空文本跳过预生成")
             handle.failed = True
             return handle
-        debug_log("TTS", "提交预生成请求", {"text": text, "tone": tone})
-        self._queue_request(_TTSRequest(text=text, tone=tone, prepared_audio=handle))
+        chunks = split_tts_expression_chunks(text)
+        debug_log(
+            "TTS",
+            "提交预生成请求",
+            {"text": text, "tone": tone, "expression_chunks": len(chunks)},
+        )
+        self._queue_request(
+            _TTSRequest(
+                text=text,
+                tone=tone,
+                prepared_audio=handle,
+                expression_chunks=tuple(chunks) if len(chunks) > 1 else (),
+            )
+        )
         return handle
 
     def speak_prepared(
@@ -494,107 +515,131 @@ class GPTSoVITSTTSProvider(QObject):
             if not self._ensure_character_weights(fail):
                 return
 
-            reference = self._select_reference(tts_request.tone)
-            payload = {
-                "text": tts_request.text,
-                "text_lang": _resolve_request_text_lang(
-                    tts_request.text,
-                    self.settings.text_lang,
-                ),
-                "ref_audio_path": str(reference.ref_audio_path),
-                "prompt_text": reference.ref_text,
-                "prompt_lang": reference.ref_lang,
-                "text_split_method": "cut1",
-                "batch_size": 1,
-                "media_type": "wav",
-                "streaming_mode": False,
-                "top_k": 15,
-                "top_p": 1,
-                "temperature": 1,
-                "repetition_penalty": 1.2,
-            }
+            chunks = list(tts_request.expression_chunks) or [tts_request.text]
+            chunk_paths: list[Path] = []
+            for chunk in chunks:
+                chunk_path = self._synthesize_gpt_sovits_text_to_path(chunk, tts_request.tone, fail)
+                if chunk_path is None:
+                    for stale_path in chunk_paths:
+                        self._schedule_audio_cleanup(stale_path)
+                    return
+                chunk_paths.append(chunk_path)
+
+            final_path = self._finalize_expression_chunk_paths(chunk_paths)
+            for chunk_path in chunk_paths:
+                if chunk_path != final_path:
+                    self._schedule_audio_cleanup(chunk_path)
+
             debug_log(
                 "TTS",
-                "发送 GPT-SoVITS 请求",
+                "GPT-SoVITS 音频生成完成",
                 {
-                    "api_url": self.settings.api_url,
                     "text": tts_request.text,
-                    "tone": tts_request.tone,
-                    "reference": {
-                        "tone": reference.tone,
-                        "ref_audio_path": reference.ref_audio_path,
-                        "ref_lang": reference.ref_lang,
-                    },
-                    "payload": payload,
+                    "chunk_count": len(chunks),
+                    "audio_path": str(final_path),
                 },
             )
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            http_request = urllib.request.Request(
-                url=self.settings.api_url,
-                data=body,
-                method="POST",
-                headers={"Content-Type": "application/json"},
-            )
-
-            try:
-                with urllib.request.urlopen(
-                    http_request,
-                    timeout=self.settings.timeout_seconds,
-                ) as response:
-                    audio_data = response.read()
-                    debug_log(
-                        "TTS",
-                        "GPT-SoVITS 请求成功",
-                        {
-                            "status": getattr(response, "status", None),
-                            "audio_bytes": len(audio_data),
-                        },
-                    )
-            except urllib.error.HTTPError as exc:
-                error_body = exc.read().decode("utf-8", errors="replace")
-                debug_log(
-                    "TTS",
-                    "GPT-SoVITS HTTP 失败",
-                    {
-                        "status": exc.code,
-                        "error_body": error_body,
-                    },
-                )
-                self._fail_audio_request(tts_request, f"GPT-SoVITS HTTP {exc.code}: {error_body}")
-                return
-            except urllib.error.URLError as exc:
-                debug_log("TTS", "GPT-SoVITS 请求失败", {"reason": str(exc.reason)})
-                self._fail_audio_request(
-                    tts_request,
-                    f"GPT-SoVITS 请求失败，请确认服务已启动并可访问 {self.settings.api_url}：{exc.reason}",
-                )
-                return
-            except TimeoutError:
-                debug_log("TTS", "GPT-SoVITS 请求超时")
-                self._fail_audio_request(tts_request, "GPT-SoVITS 请求超时。")
-                return
-
-            if not audio_data:
-                debug_log("TTS", "GPT-SoVITS 返回空音频")
-                self._fail_audio_request(tts_request, "GPT-SoVITS 返回了空音频。")
-                return
-
-            with tempfile.NamedTemporaryFile(
-                prefix="sakura_tts_",
-                suffix=".wav",
-                delete=False,
-            ) as audio_file:
-                audio_file.write(audio_data)
-                audio_path = audio_file.name
-            debug_log("TTS", "临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
-            if tts_request.prepared_audio is None:
-                self._audio_ready.emit(audio_path, tts_request.on_started, tts_request.on_finished)
-            else:
-                self._prepared_audio_ready.emit(tts_request.prepared_audio, audio_path)
+            self._deliver_generated_audio_path(tts_request, final_path)
         finally:
             with self._request_lock:
                 self._request_running = False
             self._start_next_request()
+
+    def _synthesize_gpt_sovits_text_to_path(
+        self,
+        text: str,
+        tone: str | None,
+        fail: Callable[[str], None],
+    ) -> Path | None:
+        reference = self._select_reference(tone)
+        payload = {
+            "text": text,
+            "text_lang": _resolve_request_text_lang(text, self.settings.text_lang),
+            "ref_audio_path": str(reference.ref_audio_path),
+            "prompt_text": reference.ref_text,
+            "prompt_lang": reference.ref_lang,
+            # cut0 整段合成，避免 cut1 等切分策略在长句上丢句意。
+            "text_split_method": "cut0",
+            "batch_size": 1,
+            "media_type": "wav",
+            "streaming_mode": False,
+            "top_k": 15,
+            "top_p": 1,
+            "temperature": 1,
+            "repetition_penalty": 1.2,
+        }
+        debug_log(
+            "TTS",
+            "发送 GPT-SoVITS 请求",
+            {
+                "api_url": self.settings.api_url,
+                "text": text,
+                "tone": tone,
+                "reference": {
+                    "tone": reference.tone,
+                    "ref_audio_path": reference.ref_audio_path,
+                    "ref_lang": reference.ref_lang,
+                },
+            },
+        )
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        http_request = urllib.request.Request(
+            url=self.settings.api_url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        try:
+            with urllib.request.urlopen(
+                http_request,
+                timeout=self.settings.timeout_seconds,
+            ) as response:
+                audio_data = response.read()
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            fail(f"GPT-SoVITS HTTP {exc.code}: {error_body}")
+            return None
+        except urllib.error.URLError as exc:
+            fail(
+                f"GPT-SoVITS 请求失败，请确认服务已启动并可访问 {self.settings.api_url}：{exc.reason}"
+            )
+            return None
+        except TimeoutError:
+            fail("GPT-SoVITS 请求超时。")
+            return None
+
+        if not audio_data:
+            fail("GPT-SoVITS 返回了空音频。")
+            return None
+
+        with tempfile.NamedTemporaryFile(
+            prefix="sakura_tts_",
+            suffix=".wav",
+            delete=False,
+        ) as audio_file:
+            audio_file.write(audio_data)
+            audio_path = Path(audio_file.name)
+        debug_log("TTS", "临时音频已写入", {"audio_path": str(audio_path), "bytes": len(audio_data)})
+        return audio_path
+
+    def _finalize_expression_chunk_paths(self, chunk_paths: list[Path]) -> Path:
+        if len(chunk_paths) <= 1:
+            return chunk_paths[0]
+        with tempfile.NamedTemporaryFile(
+            prefix="sakura_tts_merged_",
+            suffix=".wav",
+            delete=False,
+        ) as audio_file:
+            merged_path = Path(audio_file.name)
+        merge_wav_files(chunk_paths, merged_path)
+        return merged_path
+
+    def _deliver_generated_audio_path(self, tts_request: _TTSRequest, audio_path: Path) -> None:
+        if tts_request.prepared_audio is None:
+            self._audio_ready.emit(str(audio_path), tts_request.on_started, tts_request.on_finished)
+        else:
+            self._prepared_audio_ready.emit(tts_request.prepared_audio, str(audio_path))
 
     def _ensure_service_available(
         self,
@@ -1103,67 +1148,94 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
             if not self._ensure_reference_audio(reference, fail):
                 return
 
-            payload = {
-                "character_name": _encode_genie_character_name(self._genie_character_name()),
-                "text": tts_request.text,
-                "split_sentence": False,
-            }
+            chunks = list(tts_request.expression_chunks) or [tts_request.text]
+            chunk_paths: list[Path] = []
+            for chunk in chunks:
+                chunk_path = self._synthesize_genie_text_to_path(chunk, fail)
+                if chunk_path is None:
+                    for stale_path in chunk_paths:
+                        self._schedule_audio_cleanup(stale_path)
+                    return
+                chunk_paths.append(chunk_path)
+
+            final_path = self._finalize_expression_chunk_paths(chunk_paths)
+            for chunk_path in chunk_paths:
+                if chunk_path != final_path:
+                    self._schedule_audio_cleanup(chunk_path)
+
             debug_log(
                 "TTS",
-                "发送 Genie TTS 请求",
+                "Genie 音频生成完成",
                 {
-                    "api_url": self.settings.api_url,
                     "text": tts_request.text,
-                    "tone": tts_request.tone,
-                    "payload": payload,
+                    "chunk_count": len(chunks),
+                    "audio_path": str(final_path),
                 },
             )
-            try:
-                audio_data = self._post_json_and_read_bytes(
-                    "tts",
-                    payload,
-                    timeout=max(self.settings.timeout_seconds, 120),
-                )
-            except urllib.error.HTTPError as exc:
-                error_body = exc.read().decode("utf-8", errors="replace")
-                fail(f"Genie TTS HTTP {exc.code}: {error_body}")
-                return
-            except urllib.error.URLError as exc:
-                fail(f"Genie TTS 请求失败，请确认服务已启动并可访问 {self.settings.api_url}：{exc.reason}")
-                return
-            except TimeoutError:
-                fail("Genie TTS 请求超时。")
-                return
-
-            if not audio_data:
-                fail("Genie TTS 返回了空音频。")
-                return
-
-            with tempfile.NamedTemporaryFile(
-                prefix="sakura_genie_tts_",
-                suffix=".wav",
-                delete=False,
-            ) as audio_file:
-                audio_path = Path(audio_file.name)
-            try:
-                if not _write_genie_audio(audio_data, audio_path):
-                    fail("Genie TTS 返回的音频无法转换为 WAV。")
-                    self._schedule_audio_cleanup(audio_path)
-                    return
-            except OSError as exc:
-                fail(f"Genie TTS 写入临时音频失败：{exc}")
-                self._schedule_audio_cleanup(audio_path)
-                return
-
-            debug_log("TTS", "Genie 临时音频已写入", {"audio_path": audio_path, "bytes": len(audio_data)})
-            if tts_request.prepared_audio is None:
-                self._audio_ready.emit(str(audio_path), tts_request.on_started, tts_request.on_finished)
-            else:
-                self._prepared_audio_ready.emit(tts_request.prepared_audio, str(audio_path))
+            self._deliver_generated_audio_path(tts_request, final_path)
         finally:
             with self._request_lock:
                 self._request_running = False
             self._start_next_request()
+
+    def _synthesize_genie_text_to_path(
+        self,
+        text: str,
+        fail: Callable[[str], None],
+    ) -> Path | None:
+        payload = {
+            "character_name": _encode_genie_character_name(self._genie_character_name()),
+            "text": text,
+            "split_sentence": False,
+        }
+        debug_log(
+            "TTS",
+            "发送 Genie TTS 请求",
+            {
+                "api_url": self.settings.api_url,
+                "text": text,
+                "payload": payload,
+            },
+        )
+        try:
+            audio_data = self._post_json_and_read_bytes(
+                "tts",
+                payload,
+                timeout=max(self.settings.timeout_seconds, 120),
+            )
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            fail(f"Genie TTS HTTP {exc.code}: {error_body}")
+            return None
+        except urllib.error.URLError as exc:
+            fail(f"Genie TTS 请求失败，请确认服务已启动并可访问 {self.settings.api_url}：{exc.reason}")
+            return None
+        except TimeoutError:
+            fail("Genie TTS 请求超时。")
+            return None
+
+        if not audio_data:
+            fail("Genie TTS 返回了空音频。")
+            return None
+
+        with tempfile.NamedTemporaryFile(
+            prefix="sakura_genie_tts_",
+            suffix=".wav",
+            delete=False,
+        ) as audio_file:
+            audio_path = Path(audio_file.name)
+        try:
+            if not _write_genie_audio(audio_data, audio_path):
+                fail("Genie TTS 返回的音频无法转换为 WAV。")
+                self._schedule_audio_cleanup(audio_path)
+                return None
+        except OSError as exc:
+            fail(f"Genie TTS 写入临时音频失败：{exc}")
+            self._schedule_audio_cleanup(audio_path)
+            return None
+
+        debug_log("TTS", "Genie 临时音频已写入", {"audio_path": str(audio_path), "bytes": len(audio_data)})
+        return audio_path
 
     def _ensure_service_available(
         self,

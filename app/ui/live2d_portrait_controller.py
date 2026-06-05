@@ -119,8 +119,16 @@ class Live2DPortraitController(QObject):
         self._on_portrait_changed(self.pixmap)
         return self.pixmap
 
+    @property
+    def has_speaking_board(self) -> bool:
+        return bool(
+            self.live2d_config.speaking_expression
+            or self.live2d_config.speaking_overlay_expressions
+        )
+
     def preload_for_segment(self, segment: ChatSegment) -> None:
-        return
+        if self.has_speaking_board:
+            self.begin_speech_segment()
 
     def apply_for_segment(self, segment: ChatSegment) -> None:
         expression_id = self._expression_for_segment(segment)
@@ -134,16 +142,37 @@ class Live2DPortraitController(QObject):
         if self._is_speaking:
             self._apply_speaking_expressions()
 
-    def begin_speech(self, audio_path: Path | str | None) -> None:
+    def begin_speech_segment(self) -> None:
+        """段落开始或等待 TTS 时举起画板。"""
+        if not self.has_speaking_board:
+            return
         self._is_speaking = True
+        self._apply_speaking_expressions()
+
+    def attach_speech_audio(self, audio_path: Path | str | None) -> None:
+        """有音频时驱动口型；无配置画板时仍可作为说话入口。"""
+        if not self._is_speaking and self.has_speaking_board:
+            self.begin_speech_segment()
+        elif not self._is_speaking:
+            self._is_speaking = True
         path = Path(audio_path) if audio_path else None
         self._lip_sync.start(path)
-        self._apply_speaking_expressions()
+
+    def detach_speech_audio(self) -> None:
+        """本段音频结束，仅停口型，画板保持到整轮回复结束。"""
+        self._lip_sync.stop()
+
+    def begin_speech(self, audio_path: Path | str | None) -> None:
+        self.begin_speech_segment()
+        self.attach_speech_audio(audio_path)
 
     def end_speech(self) -> None:
         self._is_speaking = False
         self._lip_sync.stop()
         self.live2d_widget.clear_expression_overlays()
+
+    def dispose(self) -> None:
+        self._interaction.stop()
 
     def _apply_speaking_expressions(self) -> None:
         speaking = self.live2d_config.speaking_expression
@@ -170,6 +199,8 @@ class Live2DPortraitController(QObject):
 
     def _on_live2d_ready(self) -> None:
         self.apply_current()
+        if self._is_speaking:
+            self._apply_speaking_expressions()
         self._interaction.start()
 
     def trigger_tap(self, x: float, y: float) -> None:

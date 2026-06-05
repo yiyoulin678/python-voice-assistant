@@ -231,6 +231,14 @@ def test_history_window_keeps_meta_outside_message_bubble() -> None:
     app.processEvents()
 
 
+def test_entry_view_model_shows_play_button_for_assistant_entries() -> None:
+    assistant_view = _entry_view_model(_entry("assistant", "こんばんは"), "ja", "桜")
+    user_view = _entry_view_model(_entry("user", "你好"), "ja", "桜")
+
+    assert assistant_view.show_play_button is True
+    assert user_view.show_play_button is False
+
+
 def test_history_window_groups_consecutive_role_meta() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -264,6 +272,45 @@ def test_history_window_groups_consecutive_role_meta() -> None:
     assert len(window.findChildren(QFrame, "assistantBubble")) == 3
     assert meta_texts.count("桜 · 2026-05-30 16:20:30") == 1
     assert meta_texts.count("你 · 2026-05-30 16:20:30") == 2
+
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_history_window_shows_play_button_for_assistant_entries() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QPushButton")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.history_window import HistoryWindow
+
+    QApplication = qtwidgets.QApplication
+    QPushButton = qtwidgets.QPushButton
+    app = QApplication.instance() or QApplication([])
+
+    class StaticHistoryStore:
+        assistant_name = "桜"
+
+        def load(self) -> list[ChatHistoryEntry]:
+            return [
+                _entry("user", "你好"),
+                _entry("assistant", "こんばんは"),
+            ]
+
+    played: list[ChatHistoryEntry] = []
+
+    def on_play_audio(entry: ChatHistoryEntry) -> None:
+        played.append(entry)
+
+    window = HistoryWindow(StaticHistoryStore(), on_play_audio=on_play_audio)  # type: ignore[arg-type]
+    app.processEvents()
+
+    play_buttons = window.findChildren(QPushButton, "historyPlayButton")
+    assert len(play_buttons) == 1
+    play_buttons[0].click()
+    assert len(played) == 1
+    assert played[0].content == "こんばんは"
 
     window.deleteLater()
     app.processEvents()

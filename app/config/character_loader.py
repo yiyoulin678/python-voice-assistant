@@ -106,23 +106,71 @@ class CharacterRegistry:
         return profiles
 
 
-def load_system_prompt(path: Path) -> str:
+def finalize_character_prompt(content: str, *, append_desktop_pet_rules: bool) -> str:
+    """按设置决定是否把通用桌宠规则拼到 card 人设后。"""
+    stripped = content.strip()
+    if not stripped:
+        stripped = FALLBACK_SYSTEM_PROMPT.strip()
+    if append_desktop_pet_rules:
+        return with_desktop_pet_context(stripped)
+    return stripped
+
+
+def load_system_prompt(path: Path, *, append_desktop_pet_rules: bool = False) -> str:
     if not path.exists():
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+        return finalize_character_prompt(
+            FALLBACK_SYSTEM_PROMPT,
+            append_desktop_pet_rules=append_desktop_pet_rules,
+        )
 
     try:
-        content = path.read_text(encoding="utf-8").strip()
+        content = path.read_text(encoding="utf-8")
     except OSError:
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+        return finalize_character_prompt(
+            FALLBACK_SYSTEM_PROMPT,
+            append_desktop_pet_rules=append_desktop_pet_rules,
+        )
 
-    if not content:
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+    if not content.strip():
+        return finalize_character_prompt(
+            FALLBACK_SYSTEM_PROMPT,
+            append_desktop_pet_rules=append_desktop_pet_rules,
+        )
 
-    return _append_desktop_context(content)
+    return finalize_character_prompt(
+        content,
+        append_desktop_pet_rules=append_desktop_pet_rules,
+    )
 
 
-def load_character_system_prompt(profile: CharacterProfile) -> str:
-    return load_system_prompt(profile.card_path)
+def load_character_system_prompt(
+    profile: CharacterProfile,
+    *,
+    append_desktop_pet_rules: bool = False,
+) -> str:
+    return load_system_prompt(
+        profile.card_path,
+        append_desktop_pet_rules=append_desktop_pet_rules,
+    )
+
+
+def read_character_card(profile: CharacterProfile) -> str:
+    """读取角色包内的人设文件原文。"""
+    try:
+        return profile.card_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CharacterConfigError(f"无法读取人设文件：{profile.card_path}") from exc
+
+
+def write_character_card(profile: CharacterProfile, content: str) -> None:
+    """将人设写回角色包内的 card 文件。"""
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.strip():
+        raise CharacterConfigError("人设内容不能为空。")
+    try:
+        profile.card_path.write_text(normalized, encoding="utf-8")
+    except OSError as exc:
+        raise CharacterConfigError(f"无法保存人设文件：{profile.card_path}") from exc
 
 
 def _load_profile(manifest_path: Path) -> CharacterProfile:
@@ -387,5 +435,3 @@ def _resolve_package_path(package_dir: Path, path_text: str) -> Path:
     return package_dir / path
 
 
-def _append_desktop_context(content: str) -> str:
-    return with_desktop_pet_context(content)

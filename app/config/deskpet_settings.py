@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.ui.themes import DEFAULT_UI_THEME, normalize_ui_theme
+
 SUBTITLE_LANGUAGE_ZH = "zh"
 SUBTITLE_LANGUAGE_JA = "ja"
 
@@ -21,6 +23,9 @@ class PetUISettings:
     music_default_source: str = "netease"
     lyric_sync_offset_seconds: float = 1.2
     music_sing_along_enabled: bool = True
+    ui_theme: str = DEFAULT_UI_THEME
+    desktop_pet_rules_enabled: bool = False
+    strict_ja_zh_correspondence_enabled: bool = False
 
     def normalized(self) -> "PetUISettings":
         language = str(self.subtitle_language).strip().lower()
@@ -42,6 +47,9 @@ class PetUISettings:
             music_default_source=source,
             lyric_sync_offset_seconds=lyric_offset,
             music_sing_along_enabled=bool(self.music_sing_along_enabled),
+            ui_theme=normalize_ui_theme(self.ui_theme),
+            desktop_pet_rules_enabled=bool(self.desktop_pet_rules_enabled),
+            strict_ja_zh_correspondence_enabled=bool(self.strict_ja_zh_correspondence_enabled),
         )
 
 
