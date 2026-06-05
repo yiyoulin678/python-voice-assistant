@@ -122,3 +122,111 @@ class UserDB:
         conn.close()
 
         return result is not None
+    
+    def get_all_users(self):
+
+        conn = sqlite3.connect(self.db_path)
+
+        cursor = conn.execute(
+            """
+            SELECT
+                id,
+                username,
+                role
+            FROM users
+            ORDER BY id
+            """
+        )
+
+        users = cursor.fetchall()
+
+        conn.close()
+
+        return users
+    
+    def delete_user(self, user_id: int):
+
+        conn = sqlite3.connect(self.db_path)
+
+        conn.execute(
+            """
+            DELETE FROM users
+            WHERE id=?
+            """,
+            (user_id,)
+        )
+
+        conn.commit()
+        conn.close()
+
+    def get_user_by_id(self, user_id: int):
+
+        conn = sqlite3.connect(self.db_path)
+
+        cursor = conn.execute(
+            """
+            SELECT
+                id,
+                username,
+                role
+            FROM users
+            WHERE id=?
+            """,
+            (user_id,)
+        )
+
+        user = cursor.fetchone()
+
+        conn.close()
+
+        return user
+    
+    def user_exists(
+        self,
+        username: str
+    ):
+
+        conn = sqlite3.connect(self.db_path)
+
+        cursor = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE username=?
+            """,
+            (username,)
+        )
+
+        result = cursor.fetchone()
+
+        conn.close()
+
+        return result is not None
+    
+    def reset_password(
+        self,
+        user_id: int,
+        new_password: str
+    ):
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET password_hash=?
+            WHERE id=?
+            """,
+            (
+                self.hash_password(
+                    new_password
+                ),
+                user_id
+            )
+        )
+
+        conn.commit()
+
+        conn.close()
