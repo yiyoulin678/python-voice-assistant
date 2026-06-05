@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.character_loader import CharacterLive2D, CharacterProfile, CharacterRegistry
 
 
 ARCHIVE_FORMAT = "sakura.character.archive"
@@ -153,6 +153,13 @@ def export_character_archive(profile: CharacterProfile, output_path: Path) -> No
             "ref_lang": profile.voice.ref_lang,
             "text_lang": profile.voice.text_lang,
         }
+    live2d_manifest = _export_live2d_manifest(
+        profile,
+        package_archive_names=package_archive_names,
+        external_paths=external_paths,
+    )
+    if live2d_manifest is not None:
+        character_manifest["live2d"] = live2d_manifest
 
     archive_manifest = {
         "format": ARCHIVE_FORMAT,
@@ -259,6 +266,10 @@ def _normalized_import_character_data(
     if voice_data is not None:
         normalized["voice"] = _normalized_voice(voice_data)
 
+    live2d_data = character_data.get("live2d")
+    if live2d_data is not None:
+        normalized["live2d"] = _normalized_live2d(live2d_data)
+
     _validate_referenced_files(package_dir, normalized)
     return normalized
 
@@ -317,6 +328,15 @@ def _validate_referenced_files(package_dir: Path, character_data: dict[str, Any]
         for key, label in (("gpt_model", "GPT 模型"), ("sovits_model", "SoVITS 模型")):
             if key in voice_data:
                 paths.append((label, voice_data[key]))
+    live2d_data = character_data.get("live2d")
+    if isinstance(live2d_data, dict) and live2d_data.get("model"):
+        model_rel = str(live2d_data["model"])
+        paths.append(("Live2D 模型", model_rel))
+        idle_motion = live2d_data.get("idle_motion")
+        if isinstance(idle_motion, str) and idle_motion.strip():
+            model_path = package_dir / _safe_package_path(model_rel, "Live2D 模型")
+            idle_rel = (model_path.parent / idle_motion.strip()).relative_to(package_dir)
+            paths.append(("Live2D 闲置动作", idle_rel.as_posix()))
     for label, path_text in paths:
         path = package_dir / _safe_package_path(path_text, label)
         if not path.is_file():
@@ -526,3 +546,173 @@ def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:
 
 def _resolved(path: Path) -> Path:
     return path.resolve()
+
+
+def _export_live2d_manifest(
+    profile: CharacterProfile,
+    *,
+    package_archive_names: set[str],
+    external_paths: dict[Path, PurePosixPath],
+) -> dict[str, Any] | None:
+    live2d = profile.live2d
+    if live2d is None:
+        return None
+
+    model_json = _resolved(live2d.model_json_path)
+    if not model_json.is_file():
+        raise CharacterArchiveError(f"Live2D 模型不存在：{model_json}")
+
+    model_archive_path = _bundle_live2d_model_tree(
+        model_json,
+        package_dir=profile.package_dir,
+        package_archive_names=package_archive_names,
+        external_paths=external_paths,
+    )
+    return _live2d_settings_to_manifest(live2d, model_archive_path.as_posix())
+
+
+def _bundle_live2d_model_tree(
+    model_json: Path,
+    *,
+    package_dir: Path,
+    package_archive_names: set[str],
+    external_paths: dict[Path, PurePosixPath],
+) -> PurePosixPath:
+    model_dir = _resolved(model_json).parent
+    package_root = _resolved(package_dir)
+    model_archive_path: PurePosixPath | None = None
+
+    for source in sorted(model_dir.rglob("*")):
+        if not source.is_file():
+            continue
+        rel = source.relative_to(model_dir)
+        archive_path = PurePosixPath(ARCHIVE_CHARACTER_ROOT, "live2d", "model", *rel.parts)
+        archive_name = archive_path.as_posix()
+        if archive_name in package_archive_names:
+            if _resolved(source) == _resolved(model_json):
+                model_archive_path = archive_path
+            continue
+        resolved_source = _resolved(source)
+        if resolved_source in external_paths:
+            if resolved_source == _resolved(model_json):
+                model_archive_path = external_paths[resolved_source]
+            continue
+        try:
+            resolved_source.relative_to(package_root)
+        except ValueError:
+            external_paths[resolved_source] = archive_path
+        if resolved_source == _resolved(model_json):
+            model_archive_path = archive_path
+
+    if model_archive_path is None:
+        raise CharacterArchiveError(f"无法归档 Live2D 模型：{model_json}")
+    return model_archive_path
+
+
+def _live2d_settings_to_manifest(
+    live2d: CharacterLive2D,
+    model_archive_path: str,
+) -> dict[str, Any]:
+    manifest: dict[str, Any] = {"model": model_archive_path}
+    if live2d.idle_motion_file:
+        manifest["idle_motion"] = live2d.idle_motion_file
+    if live2d.default_expression:
+        manifest["default_expression"] = live2d.default_expression
+    if live2d.tone_expressions:
+        manifest["tone_expressions"] = dict(live2d.tone_expressions)
+    if live2d.speaking_expression:
+        manifest["speaking_expression"] = live2d.speaking_expression
+    if live2d.speaking_overlay_expressions:
+        manifest["speaking_overlay_expressions"] = [*live2d.speaking_overlay_expressions]
+    if live2d.tap_expressions:
+        manifest["tap_expressions"] = [*live2d.tap_expressions]
+    if live2d.idle_variation_expressions:
+        manifest["idle_variation_expressions"] = [*live2d.idle_variation_expressions]
+    manifest["idle_variation_min_seconds"] = live2d.idle_variation_min_seconds
+    manifest["idle_variation_max_seconds"] = live2d.idle_variation_max_seconds
+    manifest["blink_enabled"] = live2d.blink_enabled
+    manifest["physics_enabled"] = live2d.physics_enabled
+    return manifest
+
+
+def _normalized_live2d(live2d_data: Any) -> dict[str, Any]:
+    if not isinstance(live2d_data, dict):
+        raise CharacterArchiveError("character.live2d 必须是对象。")
+    if live2d_data.get("enabled") is False:
+        raise CharacterArchiveError("character.live2d.enabled=false 的归档包无法导入。")
+
+    normalized: dict[str, Any] = {
+        "model": _package_path_text(
+            _required_archive_resource(live2d_data, "model", "character.live2d.model")
+        ),
+    }
+    idle_motion = live2d_data.get("idle_motion")
+    if isinstance(idle_motion, str) and idle_motion.strip():
+        normalized["idle_motion"] = idle_motion.strip()
+    default_expression = live2d_data.get("default_expression")
+    if isinstance(default_expression, str) and default_expression.strip():
+        normalized["default_expression"] = default_expression.strip()
+    tone_map = live2d_data.get("tone_expressions")
+    if isinstance(tone_map, dict) and tone_map:
+        normalized["tone_expressions"] = {
+            str(label).strip(): str(expression_id).strip()
+            for label, expression_id in tone_map.items()
+            if str(label).strip() and str(expression_id).strip()
+        }
+    speaking_expression = live2d_data.get("speaking_expression")
+    if isinstance(speaking_expression, str) and speaking_expression.strip():
+        normalized["speaking_expression"] = speaking_expression.strip()
+    for field_name, target_key in (
+        ("speaking_overlay_expressions", "speaking_overlay_expressions"),
+        ("tap_expressions", "tap_expressions"),
+        ("idle_variation_expressions", "idle_variation_expressions"),
+    ):
+        values = _normalized_live2d_expression_list(live2d_data.get(field_name), field_name)
+        if values:
+            normalized[target_key] = values
+    for field_name, target_key in (
+        ("idle_variation_min_seconds", "idle_variation_min_seconds"),
+        ("idle_variation_max_seconds", "idle_variation_max_seconds"),
+    ):
+        value = live2d_data.get(field_name)
+        if value is not None:
+            normalized[target_key] = _positive_float(value, f"character.live2d.{field_name}")
+    if "blink_enabled" in live2d_data:
+        normalized["blink_enabled"] = _archive_bool(live2d_data.get("blink_enabled"))
+    if "physics_enabled" in live2d_data:
+        normalized["physics_enabled"] = _archive_bool(live2d_data.get("physics_enabled"))
+    return normalized
+
+
+def _normalized_live2d_expression_list(raw_value: Any, field_name: str) -> list[str]:
+    if raw_value is None:
+        return []
+    if not isinstance(raw_value, list):
+        raise CharacterArchiveError(f"character.live2d.{field_name} 必须是数组。")
+    result: list[str] = []
+    for item in raw_value:
+        if not isinstance(item, str) or not item.strip():
+            raise CharacterArchiveError(f"character.live2d.{field_name} 的元素必须是非空字符串。")
+        result.append(item.strip())
+    return result
+
+
+def _positive_float(value: Any, field_name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CharacterArchiveError(f"{field_name} 必须是正数。") from exc
+    if parsed <= 0:
+        raise CharacterArchiveError(f"{field_name} 必须是正数。")
+    return parsed
+
+
+def _archive_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise CharacterArchiveError("character.live2d 的布尔字段格式无效。")
