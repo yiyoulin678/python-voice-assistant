@@ -80,9 +80,14 @@ def parse_message_event(payload: dict[str, Any]) -> NapCatInboundMessage | None:
 
 
 def build_record_segment(record_path: Path) -> dict[str, Any]:
+    resolved = record_path.resolve()
+    file_value = resolved.as_uri()
+    if resolved.drive:
+        # NapCat/QQ 在 Windows 上更稳定地接受正斜杠绝对路径。
+        file_value = resolved.as_posix()
     return {
         "type": "record",
-        "data": {"file": record_path.resolve().as_uri()},
+        "data": {"file": file_value},
     }
 
 

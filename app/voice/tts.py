@@ -391,6 +391,10 @@ class GPTSoVITSTTSProvider(QObject):
         def fail(message: str) -> None:
             errors.append(message)
 
+        if not self._ensure_service_available(fail):
+            return None
+        if not self._ensure_character_weights(fail):
+            return None
         audio_path = self._synthesize_gpt_sovits_text_to_path(text, tone, fail)
         if audio_path is None and errors:
             debug_log(
@@ -431,6 +435,8 @@ class GPTSoVITSTTSProvider(QObject):
     ) -> None:
         if handle.cancelled:
             debug_log("TTS", "预生成句柄已取消，跳过播放", {"text": handle.text, "tone": handle.tone})
+            self._started.emit(on_started)
+            self._finished.emit(on_finished)
             return
         if not handle.text or handle.failed:
             debug_log(
@@ -1425,6 +1431,31 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         super().__init__(settings)
         self._loaded_character_name: str | None = None
         self._reference_audio_key: str | None = None
+
+    def synthesize_to_path(self, text: str, tone: str | None = None) -> Path | None:
+        text = text.strip()
+        if not text:
+            return None
+        errors: list[str] = []
+
+        def fail(message: str) -> None:
+            errors.append(message)
+
+        if not self._ensure_service_available(fail):
+            return None
+        reference = self._select_reference(tone)
+        if not self._ensure_character_model(reference.ref_lang, fail):
+            return None
+        if not self._ensure_reference_audio(reference, fail):
+            return None
+        audio_path = self._synthesize_genie_text_to_path(text, fail)
+        if audio_path is None and errors:
+            debug_log(
+                "TTS",
+                "QQ 外发 Genie 语音合成失败",
+                {"text": text, "tone": tone, "error": errors[-1]},
+            )
+        return audio_path
 
     def _warm_up_synthesis_resources(self, fail_callback: Callable[[str], None]) -> bool:
         if not self._ensure_service_available(fail_callback):

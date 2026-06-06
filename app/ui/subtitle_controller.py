@@ -203,6 +203,8 @@ class SubtitleController(QObject):
             },
         )
         self.reset_current_segment_progress()
+        if self.pending_reply_segments:
+            self.voice_playback.prepare_first_segment(self.pending_reply_segments[0])
         self._show_next_reply_segment(self.reply_sequence_id)
 
     def _show_next_reply_segment(self, sequence_id: int) -> None:

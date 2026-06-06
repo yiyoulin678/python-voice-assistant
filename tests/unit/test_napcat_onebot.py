@@ -43,11 +43,11 @@ def test_parse_private_message_event() -> None:
     assert message.text == "在吗"
 
 
-def test_build_record_segment_uses_file_uri() -> None:
+def test_build_record_segment_uses_stable_local_path() -> None:
     path = Path("C:/tmp/voice.wav")
     segment = build_record_segment(path)
     assert segment["type"] == "record"
-    assert segment["data"]["file"].startswith("file:///")
+    assert segment["data"]["file"] == "C:/tmp/voice.wav"
     assert build_record_only_message(path) == [segment]
 
 

@@ -27,6 +27,8 @@ class VoicePlaybackController:
         self._log_stage = log_stage
         self._target_text_lang_getter = target_text_lang_getter or (lambda: "ja")
         self._on_error = on_error
+        self._prepared_first_segment: ChatSegment | None = None
+        self._prepared_first_tts: TTSPreparedAudio | None = None
         self._prepared_next_segment: ChatSegment | None = None
         self._prepared_next_tts: TTSPreparedAudio | None = None
 
@@ -86,6 +88,49 @@ class VoicePlaybackController:
             on_started()
             on_finished()
 
+    def prepare_first_segment(self, segment: ChatSegment) -> None:
+        """为本批回复的首句预生成音频；须在 discard_prepared 之后调用。"""
+        if self._prepared_first_segment is segment and self._prepared_first_tts is not None:
+            return
+        self.discard_prepared()
+        if self._should_skip_segment_tts(segment):
+            self._log_tts_skipped(segment, None, "prepare_first")
+            return
+        self._prepared_first_segment = segment
+        self._log_stage(
+            "first_segment_tts_prepare_requested",
+            {
+                "text": segment.text,
+                "tone": segment.tone,
+                "portrait": segment.portrait,
+            },
+        )
+        debug_log(
+            "PetWindow",
+            "预生成首句 TTS",
+            {
+                "text": segment.text,
+                "tone": segment.tone,
+                "portrait": segment.portrait,
+            },
+        )
+        try:
+            self._prepared_first_tts = self.tts_provider.prepare(segment.text, segment.tone)
+        except Exception as exc:  # noqa: BLE001
+            self._prepared_first_segment = None
+            self._prepared_first_tts = None
+            debug_log(
+                "TTS",
+                "预生成首句 TTS 失败，后续将即时播放或仅显示字幕",
+                {
+                    "text": segment.text,
+                    "tone": segment.tone,
+                    "error": str(exc),
+                },
+            )
+            print(f"[TTS] 首句预生成失败，已继续字幕流程：{exc}")
+            self._notify_error(f"首句预生成失败，已继续字幕流程：{exc}")
+
     def prepare_next(self, next_segment: ChatSegment | None) -> None:
         if next_segment is None:
             self.discard_prepared()
@@ -137,8 +182,12 @@ class VoicePlaybackController:
             self._notify_error(f"预生成失败，已继续字幕流程：{exc}")
 
     def discard_prepared(self) -> None:
+        if self._prepared_first_tts is not None:
+            self.tts_provider.discard_prepared(self._prepared_first_tts)
         if self._prepared_next_tts is not None:
             self.tts_provider.discard_prepared(self._prepared_next_tts)
+        self._prepared_first_segment = None
+        self._prepared_first_tts = None
         self._prepared_next_segment = None
         self._prepared_next_tts = None
 
@@ -146,6 +195,11 @@ class VoicePlaybackController:
         self,
         segment: ChatSegment,
     ) -> TTSPreparedAudio | None:
+        if self._prepared_first_segment is segment:
+            prepared_tts = self._prepared_first_tts
+            self._prepared_first_segment = None
+            self._prepared_first_tts = None
+            return prepared_tts
         if self._prepared_next_segment is not segment:
             return None
 

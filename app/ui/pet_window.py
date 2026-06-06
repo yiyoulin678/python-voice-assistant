@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -134,7 +133,8 @@ from app.ui import (
 from app.media.music_sing_along import MusicSingAlongController
 from app.media.now_playing import set_preferred_music_source
 from app.ui.music_lyrics_overlay import LYRICS_OVERLAY_HEIGHT, MusicLyricsOverlay
-from app.storage.chat_audio import archive_chat_audio
+from app.storage.chat_audio import archive_chat_audio, export_qq_voice_audio
+from app.voice.text_language_guard import should_skip_tts_text
 from app.voice import VoicePlaybackController
 from app.voice import audio_io, speech_to_text
 from app.voice.history_audio_player import HistoryAudioPlayer
@@ -276,6 +276,7 @@ class PetWindow(QWidget):
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
         self._pending_napcat_message: NapCatInboundMessage | None = None
+        self._pending_napcat_voice_message: NapCatInboundMessage | None = None
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
         self.pending_screen_observation_event: AgentEvent | None = None
         self.pending_screen_observation_event_reminder_id: str | None = None
@@ -768,10 +769,12 @@ class PetWindow(QWidget):
             controller.end_speech()
 
     def _finish_reply_interaction(self) -> None:
+        self._pending_napcat_voice_message = None
         self._end_live2d_speech()
         self._end_interaction("reply_completed")
 
     def _on_reply_segment_completed(self, segment: ChatSegment) -> None:
+        self._forward_segment_voice_to_qq(segment)
         self._record_assistant_segment_note(segment)
         self._archive_segment_audio_to_history(segment)
 
@@ -1841,13 +1844,13 @@ class PetWindow(QWidget):
             return
         reply = result.reply
         pending_napcat = self._pending_napcat_message
-        if pending_napcat is not None:
-            self._deliver_napcat_reply(pending_napcat, result)
-            self._pending_napcat_message = None
+        self._pending_napcat_message = None
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
         self._show_reply_segments(reply.segments)
+        if pending_napcat is not None:
+            self._deliver_napcat_reply(pending_napcat, result)
         self._apply_pending_action_from_result(result)
 
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:
@@ -2484,6 +2487,7 @@ class PetWindow(QWidget):
             if bridge is not None:
                 bridge.deliver_error(pending_napcat, message)
             self._pending_napcat_message = None
+            self._pending_napcat_voice_message = None
             self._record_history("error", message)
             self.subtitle_controller.cancel_reply_flow(f"QQ 处理失败：{message}")
             self._end_interaction("error")
@@ -2795,47 +2799,59 @@ class PetWindow(QWidget):
         if bridge is None:
             return
         prefer_translation = self.subtitle_language == SUBTITLE_LANGUAGE_ZH
-        segments = result.reply.segments
         reply_text = format_agent_reply_text(
-            segments,
+            result.reply.segments,
             prefer_translation=prefer_translation,
         )
         bridge.deliver_reply(message, reply_text)
-        if segments:
-            threading.Thread(
-                target=self._send_qq_voice_async,
-                args=(message, list(segments)),
-                daemon=True,
-            ).start()
+        if result.reply.segments:
+            self._pending_napcat_voice_message = message
 
-    def _send_qq_voice_async(
-        self,
-        message: NapCatInboundMessage,
-        segments: list[ChatSegment],
-    ) -> None:
-        synthesize = getattr(self.tts_provider, "synthesize_to_path", None)
-        if not callable(synthesize):
+    def _forward_segment_voice_to_qq(self, segment: ChatSegment) -> None:
+        message = self._pending_napcat_voice_message
+        if message is None:
             return
         bridge = getattr(self, "napcat_bridge", None)
         if bridge is None:
             return
-        for segment in segments:
-            text = segment.text.strip()
-            if not text:
-                continue
-            tone = segment.tone.strip() or None
-            try:
-                audio_path = synthesize(text, tone)
-            except Exception as exc:  # noqa: BLE001
-                debug_log(
-                    "NapCat",
-                    "QQ 语音合成异常",
-                    {"text": text, "error": str(exc)},
-                )
-                continue
-            if audio_path is None:
-                continue
-            bridge.send_voice_record(message, audio_path)
+        text = segment.text.strip()
+        if not text or should_skip_tts_text(
+            text,
+            str(getattr(getattr(self.tts_provider, "settings", None), "text_lang", "ja")),
+        ):
+            napcat_log("跳过 QQ 语音", {"session": message.session_id, "text": text, "reason": "无可朗读文本"})
+            return
+        audio_path = self._resolve_qq_voice_audio_path(segment)
+        if audio_path is None:
+            napcat_log("跳过 QQ 语音", {"session": message.session_id, "text": text, "reason": "无可用音频"})
+            return
+        try:
+            export_path = export_qq_voice_audio(audio_path, self.base_dir)
+        except OSError as exc:
+            napcat_log("QQ 语音导出失败", {"session": message.session_id, "error": str(exc)})
+            debug_log("NapCat", "QQ 语音导出失败", {"error": str(exc), "source": str(audio_path)})
+            return
+        bridge.send_voice_record(message, export_path)
+
+    def _resolve_qq_voice_audio_path(self, segment: ChatSegment) -> Path | None:
+        active_path = self._active_segment_audio_path
+        if active_path:
+            source = Path(active_path)
+            if source.exists():
+                return source
+        synthesize = getattr(self.tts_provider, "synthesize_to_path", None)
+        if not callable(synthesize):
+            return None
+        tone = segment.tone.strip() or None
+        try:
+            return synthesize(segment.text, tone)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "NapCat",
+                "QQ 语音合成异常",
+                {"text": segment.text, "error": str(exc)},
+            )
+            return None
 
     def _is_napcat_host_busy(self) -> bool:
         if getattr(self, "startup_initializing", False):
@@ -3632,8 +3648,6 @@ class PetWindow(QWidget):
     def _show_reply_segments(self, segments: list[ChatSegment]) -> None:
         self._exit_reply_history_review(update_buttons=False)
         self._remember_reply_history_segments(segments)
-        if segments:
-            self.voice_playback_controller.prepare_next(segments[0])
         self.subtitle_controller.show_segments(segments)
 
     def _apply_pet_ui_settings(self, settings) -> None:  # noqa: ANN001 — PetUISettings

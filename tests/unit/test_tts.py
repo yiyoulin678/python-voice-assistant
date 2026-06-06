@@ -563,6 +563,49 @@ def test_voice_playback_controller_allows_japanese_speak_and_prepare() -> None:
     assert events == ["started", "finished"]
 
 
+def test_voice_playback_controller_uses_prepared_first_segment_audio() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    class RecordingTTS:
+        def __init__(self) -> None:
+            self.prepared = TTSPreparedAudio(text="最初の一段。")
+            self.speak_prepared_calls = 0
+
+        def prepare(self, *_args: object, **_kwargs: object) -> TTSPreparedAudio:
+            return self.prepared
+
+        def speak_prepared(
+            self,
+            _handle: TTSPreparedAudio,
+            on_started=None,  # type: ignore[no-untyped-def]
+            on_finished=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.speak_prepared_calls += 1
+            if on_started is not None:
+                on_started()
+            if on_finished is not None:
+                on_finished()
+
+        def discard_prepared(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    events: list[str] = []
+    segment = ChatSegment("最初の一段。", "中性")
+    tts = RecordingTTS()
+    controller = VoicePlaybackController(tts, lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
+
+    controller.prepare_first_segment(segment)
+    controller.speak_segment(
+        segment,
+        1,
+        on_started=lambda: events.append("started"),
+        on_finished=lambda: events.append("finished"),
+    )
+
+    assert tts.speak_prepared_calls == 1
+    assert events == ["started", "finished"]
+
+
 def test_voice_playback_controller_uses_prepared_japanese_audio() -> None:
     from app.llm.chat_reply import ChatSegment
 
