@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +70,7 @@ from app.core.debug_log import debug_log, summarize_messages
 from app.ui.history_window import HistoryWindow
 from app.platforms.napcat import NapCatBridge
 from app.platforms.napcat.log import napcat_log
+from app.platforms.napcat.onebot_v11 import NapCatInboundMessage, format_agent_reply_text
 from app.ui.napcat_console_window import NapCatConsoleWindow
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
@@ -273,6 +275,7 @@ class PetWindow(QWidget):
         self.pending_tool_action: PendingToolAction | None = None
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
+        self._pending_napcat_message: NapCatInboundMessage | None = None
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
         self.pending_screen_observation_event: AgentEvent | None = None
         self.pending_screen_observation_event_reminder_id: str | None = None
@@ -1837,6 +1840,10 @@ class PetWindow(QWidget):
             self._log_interaction_stage("screen_observation_followup_queued")
             return
         reply = result.reply
+        pending_napcat = self._pending_napcat_message
+        if pending_napcat is not None:
+            self._deliver_napcat_reply(pending_napcat, result)
+            self._pending_napcat_message = None
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
@@ -2471,6 +2478,16 @@ class PetWindow(QWidget):
     @Slot(str)
     def _handle_error(self, message: str) -> None:
         self._log_interaction_stage("worker_error", {"message": message})
+        pending_napcat = self._pending_napcat_message
+        if pending_napcat is not None:
+            bridge = getattr(self, "napcat_bridge", None)
+            if bridge is not None:
+                bridge.deliver_error(pending_napcat, message)
+            self._pending_napcat_message = None
+            self._record_history("error", message)
+            self.subtitle_controller.cancel_reply_flow(f"QQ 处理失败：{message}")
+            self._end_interaction("error")
+            return
         if self.messages and self.messages[-1]["role"] == "user":
             self.messages.pop()
         self._record_history("error", message)
@@ -2747,6 +2764,79 @@ class PetWindow(QWidget):
         debug_log("Startup", "后台启动服务失败", {"error": error})
         print(f"[Startup] 后台初始化失败：{error}")
 
+    @Slot(object, object)
+    def _on_napcat_chat_requested(
+        self,
+        message: NapCatInboundMessage,
+        request_messages: list[dict[str, Any]],
+    ) -> None:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        if self.worker_thread is not None:
+            napcat_log("忙碌回复", {"session": message.session_id, "reason": "Worker 已占用"})
+            bridge.send_busy_reply(message)
+            return
+        self._pending_napcat_message = message
+        self.subtitle_controller.show_text_immediately(f"QQ：{message.text}")
+        self._record_history("user", f"[QQ] {message.text}")
+        debug_log(
+            "PetWindow",
+            "处理 QQ 聊天请求",
+            {
+                "session_id": message.session_id,
+                "message_count": len(request_messages),
+            },
+        )
+        self._start_chat_worker(request_messages)
+
+    def _deliver_napcat_reply(self, message: NapCatInboundMessage, result: AgentResult) -> None:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        prefer_translation = self.subtitle_language == SUBTITLE_LANGUAGE_ZH
+        segments = result.reply.segments
+        reply_text = format_agent_reply_text(
+            segments,
+            prefer_translation=prefer_translation,
+        )
+        bridge.deliver_reply(message, reply_text)
+        if segments:
+            threading.Thread(
+                target=self._send_qq_voice_async,
+                args=(message, list(segments)),
+                daemon=True,
+            ).start()
+
+    def _send_qq_voice_async(
+        self,
+        message: NapCatInboundMessage,
+        segments: list[ChatSegment],
+    ) -> None:
+        synthesize = getattr(self.tts_provider, "synthesize_to_path", None)
+        if not callable(synthesize):
+            return
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        for segment in segments:
+            text = segment.text.strip()
+            if not text:
+                continue
+            tone = segment.tone.strip() or None
+            try:
+                audio_path = synthesize(text, tone)
+            except Exception as exc:  # noqa: BLE001
+                debug_log(
+                    "NapCat",
+                    "QQ 语音合成异常",
+                    {"text": text, "error": str(exc)},
+                )
+                continue
+            if audio_path is None:
+                continue
+            bridge.send_voice_record(message, audio_path)
+
     def _is_napcat_host_busy(self) -> bool:
         if getattr(self, "startup_initializing", False):
             return True
@@ -2761,11 +2851,10 @@ class PetWindow(QWidget):
         try:
             bridge = NapCatBridge(
                 settings,
-                agent_runtime=self.agent_runtime,
                 is_busy=self._is_napcat_host_busy,
-                prefer_translation=lambda: self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
                 parent=self,
             )
+            bridge.chat_requested.connect(self._on_napcat_chat_requested)
             bridge.connection_changed.connect(self._handle_napcat_connection_changed)
             if bridge.start():
                 self.napcat_bridge = bridge

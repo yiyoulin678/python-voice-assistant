@@ -2,24 +2,27 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot
 
-from app.agent import AgentResult, AgentRuntime
-from app.core.chat_pipeline import ChatPipeline
-from app.core.chat_worker import ChatWorker
 from app.core.debug_log import debug_log
-from app.platforms.napcat.log import napcat_log
 from app.llm.context_trimming import trim_messages_for_model
 from app.platforms.napcat.gateway import OneBotV11ReverseGateway
-from app.platforms.napcat.onebot_v11 import NapCatInboundMessage, format_agent_reply_text
+from app.platforms.napcat.log import napcat_log
+from app.platforms.napcat.onebot_v11 import (
+    NapCatInboundMessage,
+    build_record_only_message,
+    build_record_segment,
+)
 from app.platforms.napcat.settings import NapCatSettings
 
 
 class NapCatBridge(QObject):
-    """把 NapCat 入站消息接到 AgentRuntime，并把回复发回 QQ。"""
+    """把 NapCat 入站消息交给桌宠主聊天流程，并把回复发回 QQ。"""
 
+    chat_requested = Signal(object, object)
     _inbound = Signal(object)
     connection_changed = Signal(int)
 
@@ -27,16 +30,12 @@ class NapCatBridge(QObject):
         self,
         settings: NapCatSettings,
         *,
-        agent_runtime: AgentRuntime,
         is_busy: Callable[[], bool],
-        prefer_translation: Callable[[], bool] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self.settings = settings.normalized()
-        self.agent_runtime = agent_runtime
         self._is_busy = is_busy
-        self._prefer_translation = prefer_translation or (lambda: True)
         self._histories: dict[str, deque[dict[str, str]]] = {}
         self._active_sessions: set[str] = set()
         self._last_error: str | None = None
@@ -65,6 +64,67 @@ class NapCatBridge(QObject):
     def stop(self) -> None:
         self._gateway.stop()
         napcat_log("桥接已停止")
+
+    def release_session(self, session_id: str) -> None:
+        self._active_sessions.discard(session_id)
+
+    def send_busy_reply(self, message: NapCatInboundMessage) -> None:
+        self.release_session(message.session_id)
+        self._gateway.send_reply(message, self.settings.busy_reply_text)
+
+    def deliver_reply(
+        self,
+        message: NapCatInboundMessage,
+        reply_text: str,
+        *,
+        record_paths: list[Path] | None = None,
+    ) -> None:
+        text = reply_text.strip() or "……"
+        self._append_assistant_history(message.session_id, text)
+        payload: str | list[dict[str, Any]]
+        if record_paths:
+            payload = [{"type": "text", "data": {"text": text}}]
+            for record_path in record_paths:
+                payload.append(build_record_segment(record_path))
+        else:
+            payload = text
+        self._gateway.send_reply(message, payload)
+        self._active_sessions.discard(message.session_id)
+        napcat_log(
+            "已回复 QQ",
+            {
+                "session": message.session_id,
+                "text": text,
+                "voice_count": len(record_paths or []),
+            },
+        )
+        debug_log(
+            "NapCat",
+            "QQ 回复已发送",
+            {
+                "session_id": message.session_id,
+                "voice_count": len(record_paths or []),
+            },
+        )
+
+    def deliver_error(self, message: NapCatInboundMessage, error: str) -> None:
+        self._active_sessions.discard(message.session_id)
+        self._gateway.send_reply(message, f"处理失败：{error}")
+        napcat_log("回复失败", {"session": message.session_id, "error": error})
+        debug_log("NapCat", "QQ 消息处理失败", {"session_id": message.session_id, "error": error})
+
+    def send_voice_record(self, message: NapCatInboundMessage, record_path: Path) -> None:
+        payload = build_record_only_message(record_path)
+        self._gateway.send_reply(message, payload)
+        napcat_log(
+            "发送 QQ 语音",
+            {"session": message.session_id, "path": str(record_path)},
+        )
+
+    def _append_assistant_history(self, session_id: str, text: str) -> None:
+        history = self._histories.get(session_id)
+        if history is not None:
+            history.append({"role": "assistant", "content": text})
 
     def _handle_connection_changed(self, client_count: int) -> None:
         self.connection_changed.emit(client_count)
@@ -107,7 +167,7 @@ class NapCatBridge(QObject):
         napcat_log("开始生成回复", {"session": message.session_id, "history_count": len(history)})
         debug_log(
             "NapCat",
-            "开始处理 QQ 消息",
+            "请求桌宠生成 QQ 回复",
             {
                 "session_id": message.session_id,
                 "user_id": message.user_id,
@@ -116,45 +176,4 @@ class NapCatBridge(QObject):
                 "history_count": len(history),
             },
         )
-        worker_thread = QThread(self)
-        worker = ChatWorker(self.agent_runtime, request_messages)
-        worker.moveToThread(worker_thread)
-        worker_thread.started.connect(worker.run)
-
-        def _finish(result: AgentResult) -> None:
-            reply_text = format_agent_reply_text(
-                result.reply.segments,
-                prefer_translation=self._prefer_translation(),
-            )
-            if not reply_text:
-                reply_text = "……"
-            history.append({"role": "assistant", "content": reply_text})
-            self._gateway.send_reply(message, reply_text)
-            self._active_sessions.discard(message.session_id)
-            napcat_log(
-                "已回复 QQ",
-                {
-                    "session": message.session_id,
-                    "segments": len(result.reply.segments),
-                    "text": reply_text,
-                },
-            )
-            debug_log(
-                "NapCat",
-                "QQ 回复已发送",
-                {"session_id": message.session_id, "segments": len(result.reply.segments)},
-            )
-
-        def _fail(error: str) -> None:
-            self._active_sessions.discard(message.session_id)
-            self._gateway.send_reply(message, f"处理失败：{error}")
-            napcat_log("回复失败", {"session": message.session_id, "error": error})
-            debug_log("NapCat", "QQ 消息处理失败", {"session_id": message.session_id, "error": error})
-
-        worker.finished.connect(_finish)
-        worker.failed.connect(_fail)
-        worker.finished.connect(worker_thread.quit)
-        worker.failed.connect(worker_thread.quit)
-        worker_thread.finished.connect(worker.deleteLater)
-        worker_thread.finished.connect(worker_thread.deleteLater)
-        worker_thread.start()
+        self.chat_requested.emit(message, request_messages)

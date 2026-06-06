@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.platforms.napcat.onebot_v11 import (
+    build_record_only_message,
+    build_record_segment,
     build_send_action,
     extract_message_text,
     format_agent_reply_text,
@@ -37,6 +41,14 @@ def test_parse_private_message_event() -> None:
     assert message is not None
     assert message.session_id == "private:10001"
     assert message.text == "在吗"
+
+
+def test_build_record_segment_uses_file_uri() -> None:
+    path = Path("C:/tmp/voice.wav")
+    segment = build_record_segment(path)
+    assert segment["type"] == "record"
+    assert segment["data"]["file"].startswith("file:///")
+    assert build_record_only_message(path) == [segment]
 
 
 def test_build_send_action_for_group_and_private() -> None:

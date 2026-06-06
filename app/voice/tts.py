@@ -381,6 +381,25 @@ class GPTSoVITSTTSProvider(QObject):
             )
         )
 
+    def synthesize_to_path(self, text: str, tone: str | None = None) -> Path | None:
+        """同步合成一段音频并返回本地路径，供 QQ 等平台外发语音。"""
+        text = text.strip()
+        if not text:
+            return None
+        errors: list[str] = []
+
+        def fail(message: str) -> None:
+            errors.append(message)
+
+        audio_path = self._synthesize_gpt_sovits_text_to_path(text, tone, fail)
+        if audio_path is None and errors:
+            debug_log(
+                "TTS",
+                "QQ 外发语音合成失败",
+                {"text": text, "tone": tone, "error": errors[-1]},
+            )
+        return audio_path
+
     def prepare(self, text: str, tone: str | None = None) -> TTSPreparedAudio:
         text = text.strip()
         handle = TTSPreparedAudio(text=text, tone=tone)

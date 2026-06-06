@@ -88,23 +88,30 @@ class OneBotV11ReverseGateway:
         self._shutdown_event = None
         self._clients.clear()
 
-    def send_reply(self, message: NapCatInboundMessage, reply_text: str) -> None:
-        text = reply_text.strip()
-        if not text:
+    def send_reply(
+        self,
+        message: NapCatInboundMessage,
+        reply_payload: str | list[dict[str, Any]],
+    ) -> None:
+        if isinstance(reply_payload, str):
+            if not reply_payload.strip():
+                return
+        elif not reply_payload:
             return
         loop = self._loop
         if loop is None:
             napcat_log("发送失败：网关未运行", {"session": message.session_id})
             return
-        action = build_send_action(message, text)
-        napcat_log(
-            "发送 API",
-            {
-                "action": action.get("action"),
-                "session": message.session_id,
-                "text": text,
-            },
-        )
+        action = build_send_action(message, reply_payload)
+        log_detail: dict[str, Any] = {
+            "action": action.get("action"),
+            "session": message.session_id,
+        }
+        if isinstance(reply_payload, str):
+            log_detail["text"] = reply_payload
+        else:
+            log_detail["segments"] = len(reply_payload)
+        napcat_log("发送 API", log_detail)
         asyncio.run_coroutine_threadsafe(self._broadcast_api(action), loop)
 
     def _run_loop(self) -> None:

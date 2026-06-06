@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -78,20 +79,34 @@ def parse_message_event(payload: dict[str, Any]) -> NapCatInboundMessage | None:
     )
 
 
-def build_send_action(message: NapCatInboundMessage, reply_text: str) -> dict[str, Any]:
+def build_record_segment(record_path: Path) -> dict[str, Any]:
+    return {
+        "type": "record",
+        "data": {"file": record_path.resolve().as_uri()},
+    }
+
+
+def build_record_only_message(record_path: Path) -> list[dict[str, Any]]:
+    return [build_record_segment(record_path)]
+
+
+def build_send_action(
+    message: NapCatInboundMessage,
+    reply_payload: str | list[dict[str, Any]],
+) -> dict[str, Any]:
     if message.message_type == "group" and message.group_id is not None:
         return {
             "action": "send_group_msg",
             "params": {
                 "group_id": message.group_id,
-                "message": reply_text,
+                "message": reply_payload,
             },
         }
     return {
         "action": "send_private_msg",
         "params": {
             "user_id": message.user_id,
-            "message": reply_text,
+            "message": reply_payload,
         },
     }
 
