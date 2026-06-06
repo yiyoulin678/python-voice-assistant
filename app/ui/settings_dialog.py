@@ -105,6 +105,12 @@ from app.voice.tts import (
     GPTSoVITSTTSSettings,
     TTSConfigError,
 )
+from app.platforms.napcat.settings import (
+    DEFAULT_NAPCAT_HOST,
+    DEFAULT_NAPCAT_PATH,
+    DEFAULT_NAPCAT_PORT,
+    NapCatSettings,
+)
 from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
 from sdk.types import ToolsTabContribution
 
@@ -196,6 +202,7 @@ class SettingsDialog(QDialog):
         screen_observation_settings: ScreenObservationSettings | None = None,
         reminder_settings: ReminderSettings | None = None,
         memory_curation_settings: MemoryCurationSettings | None = None,
+        napcat_settings: NapCatSettings | None = None,
         subtitle_language: str = SUBTITLE_LANGUAGE_ZH,
         free_access_enabled: bool = False,
     ) -> None:
@@ -212,6 +219,9 @@ class SettingsDialog(QDialog):
         self.memory_curation_settings = (
             memory_curation_settings or settings_service.load_memory_curation_settings()
         )
+        self.napcat_settings = (
+            napcat_settings or settings_service.load_napcat_settings()
+        ).normalized()
         self.initial_subtitle_language = (
             SUBTITLE_LANGUAGE_ZH
             if str(subtitle_language).strip().lower() == SUBTITLE_LANGUAGE_ZH
@@ -249,6 +259,7 @@ class SettingsDialog(QDialog):
         self.result_screen_observation_settings: ScreenObservationSettings | None = None
         self.result_reminder_settings: ReminderSettings | None = None
         self.result_memory_curation_settings: MemoryCurationSettings | None = None
+        self.result_napcat_settings: NapCatSettings | None = None
         self._api_test_thread: QThread | None = None
         self._api_test_worker: ApiConnectionTestWorker | None = None
         self._memory_list_thread: QThread | None = None
@@ -280,6 +291,7 @@ class SettingsDialog(QDialog):
             ),
             "工具",
         )
+        tabs.addTab(self._build_platform_tab(self.napcat_settings), "平台")
         tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
@@ -768,6 +780,91 @@ class SettingsDialog(QDialog):
         form_layout.addRow("单次最多发送截图", self.proactive_batch_limit_spin)
         tab.setLayout(form_layout)
         return tab
+
+    def _build_platform_tab(self, settings: NapCatSettings) -> QWidget:
+        tab = QWidget(self)
+        normalized = settings.normalized()
+
+        self.napcat_enabled_check = QCheckBox(
+            "启用 NapCat / QQ 接入（反向 WebSocket）",
+            tab,
+        )
+        self.napcat_enabled_check.setChecked(normalized.enabled)
+
+        self.napcat_host_edit = QLineEdit(normalized.host, tab)
+        self.napcat_port_spin = QSpinBox(tab)
+        self.napcat_port_spin.setRange(1, 65535)
+        self.napcat_port_spin.setValue(normalized.port)
+        self.napcat_path_edit = QLineEdit(normalized.path, tab)
+        self.napcat_token_edit = QLineEdit(normalized.token, tab)
+        self.napcat_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.napcat_token_edit.setPlaceholderText("可选，与 NapCat WebSocket 客户端 token 一致")
+
+        self.napcat_allow_private_check = QCheckBox("允许私聊", tab)
+        self.napcat_allow_private_check.setChecked(normalized.allow_private)
+        self.napcat_allow_group_check = QCheckBox("允许群聊（实验性）", tab)
+        self.napcat_allow_group_check.setChecked(normalized.allow_group)
+
+        self.napcat_history_limit_spin = QSpinBox(tab)
+        self.napcat_history_limit_spin.setRange(2, 100)
+        self.napcat_history_limit_spin.setValue(normalized.history_limit)
+        self.napcat_history_limit_spin.setSuffix(" 条")
+
+        self.napcat_busy_reply_edit = QLineEdit(normalized.busy_reply_text, tab)
+
+        self.napcat_url_hint_label = QLabel(self._napcat_websocket_url_hint_text(), tab)
+        self.napcat_url_hint_label.setWordWrap(True)
+
+        napcat_setup_hint = QLabel(
+            "在 NapCat 网络配置中添加 WebSocket 客户端（名称可填 Sakura），"
+            "URL 填下方地址；保存后需先启动桌宠，再启动 NapCat 连接。",
+            tab,
+        )
+        napcat_setup_hint.setWordWrap(True)
+
+        for widget in (
+            self.napcat_host_edit,
+            self.napcat_port_spin,
+            self.napcat_path_edit,
+        ):
+            if isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._refresh_napcat_url_hint)
+            else:
+                widget.valueChanged.connect(self._refresh_napcat_url_hint)
+
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(16, 18, 16, 16)
+        form_layout.setSpacing(12)
+        form_layout.addRow("", self.napcat_enabled_check)
+        form_layout.addRow("", napcat_setup_hint)
+        form_layout.addRow("监听地址", self.napcat_host_edit)
+        form_layout.addRow("监听端口", self.napcat_port_spin)
+        form_layout.addRow("WebSocket 路径", self.napcat_path_edit)
+        form_layout.addRow("NapCat 连接地址", self.napcat_url_hint_label)
+        form_layout.addRow("Token", self.napcat_token_edit)
+        form_layout.addRow("", self.napcat_allow_private_check)
+        form_layout.addRow("", self.napcat_allow_group_check)
+        form_layout.addRow("每会话历史条数", self.napcat_history_limit_spin)
+        form_layout.addRow("桌宠忙碌时回复", self.napcat_busy_reply_edit)
+        tab.setLayout(form_layout)
+        return tab
+
+    def _napcat_websocket_url_hint_text(self) -> str:
+        host_edit = getattr(self, "napcat_host_edit", None)
+        port_spin = getattr(self, "napcat_port_spin", None)
+        path_edit = getattr(self, "napcat_path_edit", None)
+        if host_edit is None or port_spin is None or path_edit is None:
+            return self.napcat_settings.websocket_url_hint()
+        return NapCatSettings(
+            host=host_edit.text() or DEFAULT_NAPCAT_HOST,
+            port=port_spin.value() or DEFAULT_NAPCAT_PORT,
+            path=path_edit.text() or DEFAULT_NAPCAT_PATH,
+        ).normalized().websocket_url_hint()
+
+    def _refresh_napcat_url_hint(self) -> None:
+        label = getattr(self, "napcat_url_hint_label", None)
+        if label is not None:
+            label.setText(self._napcat_websocket_url_hint_text())
 
     def _build_mcp_tab(
         self,
@@ -1544,6 +1641,17 @@ class SettingsDialog(QDialog):
             windows_enabled=self.windows_mcp_enabled_check.isChecked(),
             playwright_enabled=self.playwright_mcp_enabled_check.isChecked(),
         )
+        self.result_napcat_settings = NapCatSettings(
+            enabled=self.napcat_enabled_check.isChecked(),
+            host=self.napcat_host_edit.text() or DEFAULT_NAPCAT_HOST,
+            port=self.napcat_port_spin.value(),
+            path=self.napcat_path_edit.text() or DEFAULT_NAPCAT_PATH,
+            token=self.napcat_token_edit.text(),
+            allow_private=self.napcat_allow_private_check.isChecked(),
+            allow_group=self.napcat_allow_group_check.isChecked(),
+            history_limit=self.napcat_history_limit_spin.value(),
+            busy_reply_text=self.napcat_busy_reply_edit.text(),
+        ).normalized()
         self.result_debug_log_settings = DebugLogSettings(
             enabled=self.debug_log_enabled_check.isChecked(),
             body_enabled=(

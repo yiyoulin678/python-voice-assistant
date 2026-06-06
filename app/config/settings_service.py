@@ -23,6 +23,13 @@ from app.agent.proactive_care import (
     PROACTIVE_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
     ProactiveCareSettings,
 )
+from app.platforms.napcat.settings import (
+    DEFAULT_NAPCAT_HISTORY_LIMIT,
+    DEFAULT_NAPCAT_HOST,
+    DEFAULT_NAPCAT_PATH,
+    DEFAULT_NAPCAT_PORT,
+    NapCatSettings,
+)
 from app.voice.stt_settings import (
     DEFAULT_WHISPER_LANGUAGE,
     DEFAULT_WHISPER_MODEL_NAME,
@@ -344,6 +351,39 @@ class AppSettingsService:
                 "enabled": bool(settings.enabled),
                 "body_enabled": bool(settings.body_enabled),
                 "file_enabled": bool(settings.file_enabled),
+            },
+        )
+
+    def load_napcat_settings(self) -> NapCatSettings:
+        napcat = self._system_section("napcat")
+        return NapCatSettings(
+            enabled=_bool_value(napcat.get("enabled"), False),
+            host=str(napcat.get("host", DEFAULT_NAPCAT_HOST) or DEFAULT_NAPCAT_HOST),
+            port=_int_value(napcat.get("port"), DEFAULT_NAPCAT_PORT),
+            path=str(napcat.get("path", DEFAULT_NAPCAT_PATH) or DEFAULT_NAPCAT_PATH),
+            token=str(napcat.get("token", "") or ""),
+            allow_private=_bool_value(napcat.get("allow_private"), True),
+            allow_group=_bool_value(napcat.get("allow_group"), False),
+            history_limit=_int_value(napcat.get("history_limit"), DEFAULT_NAPCAT_HISTORY_LIMIT),
+            busy_reply_text=str(
+                napcat.get("busy_reply_text", "") or "稍等一下，我还在回复上一条消息。"
+            ),
+        ).normalized()
+
+    def save_napcat_settings(self, settings: NapCatSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "napcat",
+            {
+                "enabled": bool(normalized.enabled),
+                "host": normalized.host,
+                "port": int(normalized.port),
+                "path": normalized.path,
+                "token": normalized.token,
+                "allow_private": bool(normalized.allow_private),
+                "allow_group": bool(normalized.allow_group),
+                "history_limit": int(normalized.history_limit),
+                "busy_reply_text": normalized.busy_reply_text,
             },
         )
 

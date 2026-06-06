@@ -461,6 +461,58 @@ def test_settings_dialog_exposes_windows_mcp_restart_setting() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_exposes_napcat_platform_settings() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.platforms.napcat.settings import NapCatSettings
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("napcat_platform_dialog")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        napcat_settings=NapCatSettings(
+            enabled=False,
+            port=6200,
+            path="/custom-ws",
+            allow_group=True,
+            history_limit=12,
+            busy_reply_text="我在忙，等一下。",
+        ),
+    )
+
+    assert not dialog.napcat_enabled_check.isChecked()
+    assert dialog.napcat_port_spin.value() == 6200
+    assert dialog.napcat_path_edit.text() == "/custom-ws"
+    assert "ws://127.0.0.1:6200/custom-ws" in dialog.napcat_url_hint_label.text()
+
+    dialog.napcat_enabled_check.setChecked(True)
+    dialog.napcat_port_spin.setValue(6199)
+    dialog.accept()
+
+    assert dialog.result_napcat_settings == NapCatSettings(
+        enabled=True,
+        port=6199,
+        path="/custom-ws",
+        allow_group=True,
+        history_limit=12,
+        busy_reply_text="我在忙，等一下。",
+    ).normalized()
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_exposes_tts_bundle_controls() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")

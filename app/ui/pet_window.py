@@ -67,6 +67,7 @@ from app.llm.context_trimming import trim_messages_for_model
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.debug_log import debug_log, summarize_messages
 from app.ui.history_window import HistoryWindow
+from app.platforms.napcat import NapCatBridge
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
     PROACTIVE_TOPIC_HISTORY_MARKER,
@@ -618,6 +619,7 @@ class PetWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self.close_external_tools()
+        self._stop_napcat_bridge()
         super().closeEvent(event)
 
     @Slot()
@@ -625,6 +627,7 @@ class PetWindow(QWidget):
         self.close_tts_tools()
         self.close_mcp_tools()
         self.close_plugins()
+        self._stop_napcat_bridge()
 
     def _is_drag_exempt_widget(self, watched: QObject) -> bool:
         """输入栏按钮不走窗口拖动逻辑，否则 clicked 信号会被吞掉。"""
@@ -2706,6 +2709,7 @@ class PetWindow(QWidget):
         self._set_busy(False)
         self.reminder_timer.start()
         self._sync_proactive_care_timer()
+        self._start_napcat_bridge_if_enabled()
         QTimer.singleShot(0, self._maybe_start_memory_backfill)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
@@ -2739,6 +2743,42 @@ class PetWindow(QWidget):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log("Startup", "后台启动服务失败", {"error": error})
         print(f"[Startup] 后台初始化失败：{error}")
+
+    def _is_napcat_host_busy(self) -> bool:
+        if getattr(self, "startup_initializing", False):
+            return True
+        return self.worker_thread is not None
+
+    def _start_napcat_bridge_if_enabled(self) -> None:
+        self._stop_napcat_bridge()
+        settings = self.settings_service.load_napcat_settings()
+        if not settings.enabled:
+            return
+        try:
+            self.napcat_bridge = NapCatBridge(
+                settings,
+                agent_runtime=self.agent_runtime,
+                is_busy=self._is_napcat_host_busy,
+                prefer_translation=lambda: self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
+                parent=self,
+            )
+            self.napcat_bridge.start()
+            print(
+                f"[NapCat] 反向 WebSocket 已启动：{settings.websocket_url_hint()} "
+                f"（请在 NapCat 网络配置里添加 WebSocket 客户端指向该地址）"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.napcat_bridge = None
+            print(f"[NapCat] 启动失败：{exc}")
+            debug_log("NapCat", "桥接启动失败", {"error": str(exc)})
+
+    def _stop_napcat_bridge(self) -> None:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        bridge.stop()
+        bridge.deleteLater()
+        self.napcat_bridge = None
 
     def _move_tts_provider_to_ui_thread(self, provider: TTSProvider) -> None:
         if not isinstance(provider, QObject):
@@ -3029,6 +3069,7 @@ class PetWindow(QWidget):
             screen_observation_settings=self.settings_service.load_screen_observation_settings(),
             reminder_settings=self.reminder_settings,
             memory_curation_settings=self.memory_curation_settings,
+            napcat_settings=self.settings_service.load_napcat_settings(),
             subtitle_language=self.subtitle_language,
             free_access_enabled=self.free_access_enabled,
         )
@@ -3100,6 +3141,8 @@ class PetWindow(QWidget):
             self.settings_service.save_memory_curation_settings(
                 dialog.result_memory_curation_settings
             )
+            if dialog.result_napcat_settings is not None:
+                self.settings_service.save_napcat_settings(dialog.result_napcat_settings)
             self._save_system_config_values(
                 "ui",
                 {
@@ -3143,6 +3186,7 @@ class PetWindow(QWidget):
             self.debug_log_settings = dialog.result_debug_log_settings
             self.stt_settings = dialog.result_stt_settings
             self._sync_proactive_care_timer()
+            self._start_napcat_bridge_if_enabled()
             if hasattr(self, "tray_icon"):
                 self.tray_icon.setContextMenu(self._build_menu())
             return
@@ -3190,6 +3234,7 @@ class PetWindow(QWidget):
         self._connect_live2d_tts_signals(new_tts_provider)
         self._warm_up_tts(new_tts_provider)
         self._apply_character(selected_profile)
+        self._start_napcat_bridge_if_enabled()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"
