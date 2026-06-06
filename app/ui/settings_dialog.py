@@ -112,6 +112,9 @@ from app.platforms.napcat.settings import (
     DEFAULT_NAPCAT_HOST,
     DEFAULT_NAPCAT_PATH,
     DEFAULT_NAPCAT_PORT,
+    NAPCAT_REPLY_BOTH,
+    NAPCAT_REPLY_TEXT_ONLY,
+    NAPCAT_REPLY_VOICE_ONLY,
     NapCatSettings,
 )
 from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
@@ -827,6 +830,15 @@ class SettingsDialog(QDialog):
 
         self.napcat_busy_reply_edit = QLineEdit(normalized.busy_reply_text, tab)
 
+        self.napcat_reply_mode_combo = QComboBox(tab)
+        self.napcat_reply_mode_combo.addItem("文字 + 语音", NAPCAT_REPLY_BOTH)
+        self.napcat_reply_mode_combo.addItem("仅文字", NAPCAT_REPLY_TEXT_ONLY)
+        self.napcat_reply_mode_combo.addItem("仅语音", NAPCAT_REPLY_VOICE_ONLY)
+        reply_mode_index = self.napcat_reply_mode_combo.findData(normalized.reply_mode)
+        self.napcat_reply_mode_combo.setCurrentIndex(
+            reply_mode_index if reply_mode_index >= 0 else 0
+        )
+
         self.napcat_url_hint_label = QLabel(self._napcat_websocket_url_hint_text(), tab)
         self.napcat_url_hint_label.setWordWrap(True)
 
@@ -862,6 +874,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("", self.napcat_allow_private_check)
         form_layout.addRow("", self.napcat_allow_group_check)
         form_layout.addRow("每会话历史条数", self.napcat_history_limit_spin)
+        form_layout.addRow("QQ 回复内容", self.napcat_reply_mode_combo)
         form_layout.addRow("桌宠忙碌时回复", self.napcat_busy_reply_edit)
         if self._on_open_napcat_console is not None:
             self.napcat_console_button = QPushButton("打开 QQ 控制台", tab)
@@ -1683,6 +1696,9 @@ class SettingsDialog(QDialog):
             allow_group=self.napcat_allow_group_check.isChecked(),
             history_limit=self.napcat_history_limit_spin.value(),
             busy_reply_text=self.napcat_busy_reply_edit.text(),
+            reply_mode=str(
+                self.napcat_reply_mode_combo.currentData() or NAPCAT_REPLY_BOTH
+            ),
         ).normalized()
         self.result_debug_log_settings = DebugLogSettings(
             enabled=self.debug_log_enabled_check.isChecked(),

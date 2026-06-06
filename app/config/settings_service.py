@@ -24,6 +24,7 @@ from app.agent.proactive_care import (
     ProactiveCareSettings,
 )
 from app.platforms.napcat.settings import (
+    NAPCAT_REPLY_BOTH,
     DEFAULT_NAPCAT_HISTORY_LIMIT,
     DEFAULT_NAPCAT_HOST,
     DEFAULT_NAPCAT_PATH,
@@ -369,6 +370,7 @@ class AppSettingsService:
             busy_reply_text=str(
                 napcat.get("busy_reply_text", "") or "稍等一下，我还在回复上一条消息。"
             ),
+            reply_mode=str(napcat.get("reply_mode", NAPCAT_REPLY_BOTH) or NAPCAT_REPLY_BOTH),
         ).normalized()
 
     def save_napcat_settings(self, settings: NapCatSettings) -> None:
@@ -386,6 +388,7 @@ class AppSettingsService:
                 "allow_group": bool(normalized.allow_group),
                 "history_limit": int(normalized.history_limit),
                 "busy_reply_text": normalized.busy_reply_text,
+                "reply_mode": normalized.reply_mode,
             },
         )
 

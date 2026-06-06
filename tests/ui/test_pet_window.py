@@ -490,6 +490,7 @@ def test_settings_dialog_exposes_napcat_platform_settings() -> None:
             allow_group=True,
             history_limit=12,
             busy_reply_text="我在忙，等一下。",
+            reply_mode="text_only",
         ),
     )
 
@@ -510,6 +511,7 @@ def test_settings_dialog_exposes_napcat_platform_settings() -> None:
         allow_group=True,
         history_limit=12,
         busy_reply_text="我在忙，等一下。",
+        reply_mode="text_only",
     ).normalized()
     dialog.deleteLater()
     app.processEvents()

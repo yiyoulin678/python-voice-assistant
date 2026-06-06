@@ -15,6 +15,15 @@ DEFAULT_NAPCAT_PORT = 6199
 DEFAULT_NAPCAT_PATH = "/ws"
 DEFAULT_NAPCAT_HISTORY_LIMIT = 20
 
+NAPCAT_REPLY_BOTH = "both"
+NAPCAT_REPLY_TEXT_ONLY = "text_only"
+NAPCAT_REPLY_VOICE_ONLY = "voice_only"
+_SUPPORTED_NAPCAT_REPLY_MODES = {
+    NAPCAT_REPLY_BOTH,
+    NAPCAT_REPLY_TEXT_ONLY,
+    NAPCAT_REPLY_VOICE_ONLY,
+}
+
 
 @dataclass(frozen=True)
 class NapCatSettings:
@@ -30,6 +39,7 @@ class NapCatSettings:
     allow_group: bool = False
     history_limit: int = DEFAULT_NAPCAT_HISTORY_LIMIT
     busy_reply_text: str = "稍等一下，我还在回复上一条消息。"
+    reply_mode: str = NAPCAT_REPLY_BOTH
 
     def normalized(self) -> "NapCatSettings":
         port = int(self.port)
@@ -50,6 +60,10 @@ class NapCatSettings:
             connect_host = primary_local_ipv4() or "127.0.0.1"
         connect_host = normalize_connect_host(connect_host, port=port)
 
+        reply_mode = str(self.reply_mode or NAPCAT_REPLY_BOTH).strip().lower()
+        if reply_mode not in _SUPPORTED_NAPCAT_REPLY_MODES:
+            reply_mode = NAPCAT_REPLY_BOTH
+
         return NapCatSettings(
             enabled=bool(self.enabled),
             host=bind_host,
@@ -62,7 +76,20 @@ class NapCatSettings:
             history_limit=history_limit,
             busy_reply_text=str(self.busy_reply_text or "").strip()
             or "稍等一下，我还在回复上一条消息。",
+            reply_mode=reply_mode,
         )
+
+    def reply_sends_text(self) -> bool:
+        return self.normalized().reply_mode in {
+            NAPCAT_REPLY_BOTH,
+            NAPCAT_REPLY_TEXT_ONLY,
+        }
+
+    def reply_sends_voice(self) -> bool:
+        return self.normalized().reply_mode in {
+            NAPCAT_REPLY_BOTH,
+            NAPCAT_REPLY_VOICE_ONLY,
+        }
 
     def bind_host(self) -> str:
         return self.normalized().host

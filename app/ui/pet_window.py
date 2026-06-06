@@ -69,7 +69,11 @@ from app.core.debug_log import debug_log, summarize_messages
 from app.ui.history_window import HistoryWindow
 from app.platforms.napcat import NapCatBridge
 from app.platforms.napcat.log import napcat_log
-from app.platforms.napcat.onebot_v11 import NapCatInboundMessage, format_agent_reply_text
+from app.platforms.napcat.onebot_v11 import (
+    NapCatInboundMessage,
+    format_agent_reply_text,
+    format_inbound_pet_display,
+)
 from app.ui.napcat_console_window import NapCatConsoleWindow
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
@@ -2782,8 +2786,9 @@ class PetWindow(QWidget):
             bridge.send_busy_reply(message)
             return
         self._pending_napcat_message = message
-        self.subtitle_controller.show_text_immediately(f"QQ：{message.text}")
-        self._record_history("user", f"[QQ] {message.text}")
+        display_text = format_inbound_pet_display(message)
+        self.subtitle_controller.show_text_immediately(display_text)
+        self._record_history("user", f"[{message.sender_name}] {message.text}")
         debug_log(
             "PetWindow",
             "处理 QQ 聊天请求",
@@ -2798,18 +2803,33 @@ class PetWindow(QWidget):
         bridge = getattr(self, "napcat_bridge", None)
         if bridge is None:
             return
+        napcat_settings = self.settings_service.load_napcat_settings()
         prefer_translation = self.subtitle_language == SUBTITLE_LANGUAGE_ZH
         reply_text = format_agent_reply_text(
             result.reply.segments,
             prefer_translation=prefer_translation,
         )
-        bridge.deliver_reply(message, reply_text)
-        if result.reply.segments:
+        send_text = napcat_settings.reply_sends_text()
+        send_voice = napcat_settings.reply_sends_voice() and bool(result.reply.segments)
+        if send_text:
+            bridge.deliver_reply(message, reply_text, send_text=True)
+        elif send_voice:
+            bridge.note_assistant_reply(message, reply_text)
+            bridge.release_session(message.session_id)
+            napcat_log(
+                "已排队 QQ 语音",
+                {"session": message.session_id, "sender": message.sender_name},
+            )
+        else:
+            bridge.deliver_reply(message, reply_text, send_text=True)
+        if send_voice:
             self._pending_napcat_voice_message = message
 
     def _forward_segment_voice_to_qq(self, segment: ChatSegment) -> None:
         message = self._pending_napcat_voice_message
         if message is None:
+            return
+        if not self.settings_service.load_napcat_settings().reply_sends_voice():
             return
         bridge = getattr(self, "napcat_bridge", None)
         if bridge is None:

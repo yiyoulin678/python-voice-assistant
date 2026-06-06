@@ -15,6 +15,7 @@ class NapCatInboundMessage:
     user_id: int
     group_id: int | None
     text: str
+    sender_name: str
     self_id: int | None
     raw_event: dict[str, Any]
 
@@ -36,6 +37,29 @@ def extract_message_text(message: Any) -> str:
             if text:
                 parts.append(text)
     return " ".join(parts).strip()
+
+
+def extract_sender_display_name(payload: dict[str, Any]) -> str:
+    sender = payload.get("sender")
+    if isinstance(sender, dict):
+        message_type = str(payload.get("message_type", "")).lower()
+        if message_type == "group":
+            for key in ("card", "nickname"):
+                value = str(sender.get(key, "")).strip()
+                if value:
+                    return value
+        else:
+            nickname = str(sender.get("nickname", "")).strip()
+            if nickname:
+                return nickname
+    try:
+        return str(int(payload.get("user_id")))
+    except (TypeError, ValueError):
+        return "未知用户"
+
+
+def format_inbound_pet_display(message: NapCatInboundMessage) -> str:
+    return f"{message.sender_name}：{message.text}"
 
 
 def parse_message_event(payload: dict[str, Any]) -> NapCatInboundMessage | None:
@@ -74,6 +98,7 @@ def parse_message_event(payload: dict[str, Any]) -> NapCatInboundMessage | None:
         user_id=user_id,
         group_id=group_id,
         text=text,
+        sender_name=extract_sender_display_name(payload),
         self_id=self_id,
         raw_event=payload,
     )

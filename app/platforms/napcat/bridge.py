@@ -72,30 +72,38 @@ class NapCatBridge(QObject):
         self.release_session(message.session_id)
         self._gateway.send_reply(message, self.settings.busy_reply_text)
 
+    def note_assistant_reply(self, message: NapCatInboundMessage, reply_text: str) -> None:
+        text = reply_text.strip() or "……"
+        self._append_assistant_history(message.session_id, text)
+
     def deliver_reply(
         self,
         message: NapCatInboundMessage,
         reply_text: str,
         *,
         record_paths: list[Path] | None = None,
+        send_text: bool = True,
     ) -> None:
         text = reply_text.strip() or "……"
         self._append_assistant_history(message.session_id, text)
-        payload: str | list[dict[str, Any]]
-        if record_paths:
-            payload = [{"type": "text", "data": {"text": text}}]
-            for record_path in record_paths:
-                payload.append(build_record_segment(record_path))
-        else:
-            payload = text
-        self._gateway.send_reply(message, payload)
+        if send_text:
+            payload: str | list[dict[str, Any]]
+            if record_paths:
+                payload = [{"type": "text", "data": {"text": text}}]
+                for record_path in record_paths:
+                    payload.append(build_record_segment(record_path))
+            else:
+                payload = text
+            self._gateway.send_reply(message, payload)
         self._active_sessions.discard(message.session_id)
         napcat_log(
             "已回复 QQ",
             {
                 "session": message.session_id,
-                "text": text,
+                "sender": message.sender_name,
+                "text": text if send_text else "",
                 "voice_count": len(record_paths or []),
+                "send_text": send_text,
             },
         )
         debug_log(
@@ -104,6 +112,7 @@ class NapCatBridge(QObject):
             {
                 "session_id": message.session_id,
                 "voice_count": len(record_paths or []),
+                "send_text": send_text,
             },
         )
 
@@ -141,6 +150,7 @@ class NapCatBridge(QObject):
             {
                 "type": message.message_type,
                 "session": message.session_id,
+                "sender": message.sender_name,
                 "user_id": message.user_id,
                 "group_id": message.group_id,
                 "text": message.text,

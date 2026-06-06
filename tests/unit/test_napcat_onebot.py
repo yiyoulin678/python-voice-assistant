@@ -7,13 +7,18 @@ from app.platforms.napcat.onebot_v11 import (
     build_record_segment,
     build_send_action,
     extract_message_text,
+    extract_sender_display_name,
     format_agent_reply_text,
+    format_inbound_pet_display,
     parse_message_event,
 )
+from app.platforms.napcat.settings import (
+    NAPCAT_REPLY_BOTH,
+    NAPCAT_REPLY_TEXT_ONLY,
+    NAPCAT_REPLY_VOICE_ONLY,
+    NapCatSettings,
+)
 from app.platforms.napcat.gateway import OneBotV11ReverseGateway
-from app.platforms.napcat.settings import NapCatSettings
-
-
 def test_extract_message_text_from_string_and_segments() -> None:
     assert extract_message_text("你好") == "你好"
     assert (
@@ -35,12 +40,36 @@ def test_parse_private_message_event() -> None:
             "message_type": "private",
             "user_id": 10001,
             "self_id": 20002,
+            "sender": {"nickname": "小樱"},
             "message": [{"type": "text", "data": {"text": "在吗"}}],
         }
     )
     assert message is not None
     assert message.session_id == "private:10001"
     assert message.text == "在吗"
+    assert message.sender_name == "小樱"
+    assert format_inbound_pet_display(message) == "小樱：在吗"
+
+
+def test_extract_sender_display_name_prefers_group_card() -> None:
+    payload = {
+        "message_type": "group",
+        "user_id": 42,
+        "sender": {"nickname": "昵称A", "card": "群名片B"},
+    }
+    assert extract_sender_display_name(payload) == "群名片B"
+
+
+def test_napcat_settings_reply_mode_helpers() -> None:
+    both = NapCatSettings(reply_mode=NAPCAT_REPLY_BOTH).normalized()
+    text_only = NapCatSettings(reply_mode=NAPCAT_REPLY_TEXT_ONLY).normalized()
+    voice_only = NapCatSettings(reply_mode=NAPCAT_REPLY_VOICE_ONLY).normalized()
+    invalid = NapCatSettings(reply_mode="invalid").normalized()
+
+    assert both.reply_sends_text() and both.reply_sends_voice()
+    assert text_only.reply_sends_text() and not text_only.reply_sends_voice()
+    assert voice_only.reply_sends_voice() and not voice_only.reply_sends_text()
+    assert invalid.reply_mode == NAPCAT_REPLY_BOTH
 
 
 def test_build_record_segment_uses_stable_local_path() -> None:
