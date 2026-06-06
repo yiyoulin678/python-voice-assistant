@@ -16,6 +16,10 @@ from app.platforms.napcat.onebot_v11 import (
     build_record_only_message,
     build_record_segment,
 )
+from app.platforms.napcat.outbound import (
+    known_contact_labels,
+    resolve_outbound_recipient,
+)
 from app.platforms.napcat.settings import NapCatSettings
 
 
@@ -37,6 +41,7 @@ class NapCatBridge(QObject):
         self.settings = settings.normalized()
         self._is_busy = is_busy
         self._histories: dict[str, deque[dict[str, str]]] = {}
+        self._known_contacts: dict[str, NapCatInboundMessage] = {}
         self._active_sessions: set[str] = set()
         self._last_error: str | None = None
         self._gateway = OneBotV11ReverseGateway(
@@ -67,6 +72,28 @@ class NapCatBridge(QObject):
 
     def release_session(self, session_id: str) -> None:
         self._active_sessions.discard(session_id)
+
+    def known_contact_names(self) -> list[str]:
+        return known_contact_labels(list(self._known_contacts.values()))
+
+    def resolve_outbound_recipient(self, recipient: str) -> NapCatInboundMessage | None:
+        return resolve_outbound_recipient(
+            recipient,
+            known_messages=list(self._known_contacts.values()),
+        )
+
+    def record_outbound_user_message(
+        self,
+        target: NapCatInboundMessage,
+        text: str,
+    ) -> list[dict[str, str]]:
+        self._remember_contact(target)
+        history = self._histories.setdefault(
+            target.session_id,
+            deque(maxlen=self.settings.history_limit),
+        )
+        history.append({"role": "user", "content": text})
+        return trim_messages_for_model(list(history))
 
     def send_busy_reply(self, message: NapCatInboundMessage) -> None:
         self.release_session(message.session_id)
@@ -130,6 +157,9 @@ class NapCatBridge(QObject):
             {"session": message.session_id, "path": str(record_path)},
         )
 
+    def _remember_contact(self, message: NapCatInboundMessage) -> None:
+        self._known_contacts[message.session_id] = message
+
     def _append_assistant_history(self, session_id: str, text: str) -> None:
         history = self._histories.get(session_id)
         if history is not None:
@@ -170,6 +200,7 @@ class NapCatBridge(QObject):
             napcat_log("忙碌回复", {"session": message.session_id, "reason": "桌宠正忙"})
             self._gateway.send_reply(message, self.settings.busy_reply_text)
             return
+        self._remember_contact(message)
         self._active_sessions.add(message.session_id)
         history = self._histories.setdefault(message.session_id, deque(maxlen=self.settings.history_limit))
         history.append({"role": "user", "content": message.text})

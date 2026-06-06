@@ -74,6 +74,10 @@ from app.platforms.napcat.onebot_v11 import (
     format_agent_reply_text,
     format_inbound_pet_display,
 )
+from app.platforms.napcat.outbound import (
+    format_outbound_pet_display,
+    parse_outbound_directive,
+)
 from app.ui.napcat_console_window import NapCatConsoleWindow
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
@@ -281,6 +285,7 @@ class PetWindow(QWidget):
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
         self._pending_napcat_message: NapCatInboundMessage | None = None
         self._pending_napcat_voice_message: NapCatInboundMessage | None = None
+        self._outbound_napcat_target: NapCatInboundMessage | None = None
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
         self.pending_screen_observation_event: AgentEvent | None = None
         self.pending_screen_observation_event_reminder_id: str | None = None
@@ -1706,6 +1711,37 @@ class PetWindow(QWidget):
         if not text and manual_observation is not None:
             text = MANUAL_SCREENSHOT_DEFAULT_TEXT
 
+        outbound_target: NapCatInboundMessage | None = None
+        outbound_directive = parse_outbound_directive(text) if text else None
+        if outbound_directive is not None:
+            bridge = getattr(self, "napcat_bridge", None)
+            if bridge is None:
+                QMessageBox.information(
+                    self,
+                    "QQ",
+                    "QQ 接入未启用，无法使用 @收件人 发送。",
+                )
+                self._end_interaction("ignored")
+                return
+            outbound_target = bridge.resolve_outbound_recipient(outbound_directive.recipient)
+            if outbound_target is None:
+                known_names = bridge.known_contact_names()
+                hint = "、".join(known_names[:5]) if known_names else "暂无，可先让对方发一条消息"
+                QMessageBox.warning(
+                    self,
+                    "QQ",
+                    f"找不到收件人「{outbound_directive.recipient}」。\n"
+                    f"可用昵称：{hint}\n"
+                    "也可使用 @QQ号、@private:QQ号 或 @group:群号。",
+                )
+                self._end_interaction("ignored")
+                return
+            text = outbound_directive.text
+            self._outbound_napcat_target = outbound_target
+            self.subtitle_controller.show_text_immediately(
+                format_outbound_pet_display(outbound_target, text)
+            )
+
         self._set_pending_tool_action(None)
         exit_reply_history_review = getattr(self, "_exit_reply_history_review", None)
         if exit_reply_history_review is not None:
@@ -1731,14 +1767,24 @@ class PetWindow(QWidget):
         else:
             request_user_message: dict[str, Any] = {"role": "user", "content": text}
             recorded_user_text = text
+            if outbound_target is not None:
+                recorded_user_text = format_outbound_pet_display(outbound_target, text)
 
-        request_messages = _add_visual_context_to_messages(
-            [*self.messages, request_user_message],
-            user_text=text,
-            store=getattr(self, "visual_observation_store", None),
-            has_current_image=manual_observation is not None,
-        )
-        request_messages = trim_messages_for_model(request_messages)
+        if outbound_target is not None:
+            bridge = getattr(self, "napcat_bridge", None)
+            if bridge is None:
+                self._outbound_napcat_target = None
+                self._end_interaction("ignored")
+                return
+            request_messages = bridge.record_outbound_user_message(outbound_target, text)
+        else:
+            request_messages = _add_visual_context_to_messages(
+                [*self.messages, request_user_message],
+                user_text=text,
+                store=getattr(self, "visual_observation_store", None),
+                has_current_image=manual_observation is not None,
+            )
+            request_messages = trim_messages_for_model(request_messages)
         debug_log(
             "PetWindow",
             "用户消息入队",
@@ -1848,13 +1894,16 @@ class PetWindow(QWidget):
             return
         reply = result.reply
         pending_napcat = self._pending_napcat_message
+        outbound_napcat = self._outbound_napcat_target
         self._pending_napcat_message = None
+        self._outbound_napcat_target = None
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
         self._show_reply_segments(reply.segments)
-        if pending_napcat is not None:
-            self._deliver_napcat_reply(pending_napcat, result)
+        napcat_target = pending_napcat or outbound_napcat
+        if napcat_target is not None:
+            self._deliver_napcat_reply(napcat_target, result)
         self._apply_pending_action_from_result(result)
 
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:
@@ -2181,7 +2230,10 @@ class PetWindow(QWidget):
         self._update_proactive_care_hint()
 
     def _default_input_placeholder(self) -> str:
-        return f"和{self.character_profile.display_name}说点什么..."
+        base = f"和{self.character_profile.display_name}说点什么..."
+        if getattr(self, "napcat_bridge", None) is not None:
+            return f"{base} 用 @昵称 或 @QQ号 发给QQ"
+        return base
 
     def _proactive_care_countdown_seconds(self) -> int | None:
         return compute_proactive_care_countdown_seconds(
@@ -2486,11 +2538,14 @@ class PetWindow(QWidget):
     def _handle_error(self, message: str) -> None:
         self._log_interaction_stage("worker_error", {"message": message})
         pending_napcat = self._pending_napcat_message
-        if pending_napcat is not None:
+        outbound_napcat = self._outbound_napcat_target
+        napcat_target = pending_napcat or outbound_napcat
+        if napcat_target is not None:
             bridge = getattr(self, "napcat_bridge", None)
             if bridge is not None:
-                bridge.deliver_error(pending_napcat, message)
+                bridge.deliver_error(napcat_target, message)
             self._pending_napcat_message = None
+            self._outbound_napcat_target = None
             self._pending_napcat_voice_message = None
             self._record_history("error", message)
             self.subtitle_controller.cancel_reply_flow(f"QQ 处理失败：{message}")
@@ -2894,6 +2949,8 @@ class PetWindow(QWidget):
             bridge.connection_changed.connect(self._handle_napcat_connection_changed)
             if bridge.start():
                 self.napcat_bridge = bridge
+                if hasattr(self, "input_edit"):
+                    self.input_edit.setPlaceholderText(self._default_input_placeholder())
                 for index, url in enumerate(settings.websocket_url_hint_lines()):
                     label = "请在 NapCat 填写" if index == 0 else "同机可试"
                     napcat_log(f"{label}：{url}")
@@ -2916,6 +2973,8 @@ class PetWindow(QWidget):
 
     @Slot(int)
     def _handle_napcat_connection_changed(self, client_count: int) -> None:
+        if hasattr(self, "input_edit"):
+            self.input_edit.setPlaceholderText(self._default_input_placeholder())
         if client_count > 0:
             napcat_log(f"NapCat 已连接（{client_count} 个客户端）")
             if hasattr(self, "tray_icon"):
