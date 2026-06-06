@@ -131,9 +131,11 @@ from app.voice import VoicePlaybackController
 from app.voice import audio_io, speech_to_text
 from app.voice.history_audio_player import HistoryAudioPlayer
 from app.voice.stt_settings import STTSettings
+from app.voice.voice_call_listener import VoiceCallListener
 from app.voice.voice_workers import (
     StartRecordingWorker,
     StopRecordTranscribeWorker,
+    TranscribePathWorker,
     VoiceTranscribeResult,
 )
 
@@ -252,6 +254,9 @@ class PetWindow(QWidget):
         self._voice_rec_worker: QObject | None = None
         self._voice_transcribe_thread: QThread | None = None
         self._voice_transcribe_worker: QObject | None = None
+        self._voice_call_active = False
+        self._voice_call_listener: VoiceCallListener | None = None
+        self._voice_call_transcribe_thread: QThread | None = None
         self.memory_curation_thread: QThread | None = None
         self.memory_curation_worker: MemoryCurationWorker | None = None
         self.memory_curation_mode = ""
@@ -499,6 +504,14 @@ class PetWindow(QWidget):
             self.voice_button.setEnabled(False)
             self.voice_button.setToolTip("语音输入已在 data/config/system_config.yaml 中关闭")
 
+        self.voice_call_button = QPushButton("通话", self.input_bar)
+        self.voice_call_button.setObjectName("voiceCallButton")
+        self.voice_call_button.setFixedHeight(INPUT_CONTROL_HEIGHT)
+        self.voice_call_button.setCheckable(True)
+        self.voice_call_button.setToolTip("开启后持续听麦克风，说完自动识别（无需按住）")
+        self.voice_call_button.clicked.connect(self._handle_voice_call_button_clicked)
+        self._sync_voice_call_button_state()
+
         self.tool_confirmation_panel = ToolConfirmationPanel(
             self.confirm_pending_action,
             self.cancel_pending_action,
@@ -512,6 +525,7 @@ class PetWindow(QWidget):
         input_layout.setSpacing(8)
         input_layout.addWidget(self.input_edit, 1)
         input_layout.addWidget(self.tool_confirmation_panel)
+        input_layout.addWidget(self.voice_call_button)
         input_layout.addWidget(self.voice_button)
         input_layout.addWidget(self.screenshot_button)
         input_layout.addWidget(self.send_button)
@@ -617,6 +631,7 @@ class PetWindow(QWidget):
 
     @Slot()
     def close_external_tools(self) -> None:
+        self._stop_voice_call_mode()
         self.close_tts_tools()
         self.close_mcp_tools()
         self.close_plugins()
@@ -1427,8 +1442,142 @@ class PetWindow(QWidget):
         if self._voice_rec_starting:
             self._voice_long_press_cancel_pending = True
 
+    def _sync_voice_call_button_state(self) -> None:
+        if not hasattr(self, "voice_call_button"):
+            return
+        try:
+            available = (
+                self.stt_settings.enabled
+                and self.stt_settings.voice_call_enabled
+                and bool(audio_io.list_input_devices())
+            )
+        except audio_io.AudioIOError:
+            available = False
+        self.voice_call_button.setVisible(self.stt_settings.enabled)
+        self.voice_call_button.setEnabled(available and not self._voice_recording)
+        if not self.stt_settings.voice_call_enabled:
+            self.voice_call_button.setToolTip("语音通话已在设置中关闭")
+        elif not available:
+            self.voice_call_button.setToolTip("需要可用麦克风才能开启通话")
+        else:
+            self.voice_call_button.setToolTip("开启后持续听麦克风，说完自动识别（无需按住）")
+        if self._voice_call_active:
+            self.voice_call_button.setChecked(True)
+            self.voice_call_button.setText("通话中")
+        else:
+            self.voice_call_button.setChecked(False)
+            self.voice_call_button.setText("通话")
+
+    def _handle_voice_call_button_clicked(self) -> None:
+        self._mark_user_activity()
+        if self.voice_call_button.isChecked():
+            self._start_voice_call_mode()
+            return
+        self._stop_voice_call_mode()
+
+    def _start_voice_call_mode(self) -> None:
+        if not self.stt_settings.enabled or not self.stt_settings.voice_call_enabled:
+            self.voice_call_button.setChecked(False)
+            QMessageBox.information(self, "语音通话", "请先在设置中启用语音输入与语音通话。")
+            return
+        if self._voice_recording or self._voice_rec_starting:
+            self.voice_call_button.setChecked(False)
+            QMessageBox.information(self, "语音通话", "请先结束当前录音。")
+            return
+        if self._voice_call_listener is not None:
+            return
+        listener = VoiceCallListener(
+            self.stt_settings,
+            self.stt_settings.recordings_dir(self.base_dir),
+            self,
+        )
+        listener.status_changed.connect(self.set_speech)
+        listener.user_started_speaking.connect(self._on_voice_call_user_speaking)
+        listener.utterance_ready.connect(self._on_voice_call_utterance_ready)
+        listener.error_occurred.connect(self._on_voice_call_error)
+        listener.finished.connect(listener.deleteLater)
+        listener.finished.connect(self._on_voice_call_listener_finished)
+        self._voice_call_listener = listener
+        self._voice_call_active = True
+        self._sync_voice_call_button_state()
+        self.voice_button.setEnabled(False)
+        listener.start()
+
+    def _stop_voice_call_mode(self) -> None:
+        listener = self._voice_call_listener
+        if listener is not None:
+            listener.stop_listening()
+            if listener.isRunning():
+                listener.wait(2000)
+            self._voice_call_listener = None
+        self._voice_call_active = False
+        if hasattr(self, "voice_call_button"):
+            self.voice_call_button.setChecked(False)
+        self._sync_voice_call_button_state()
+        if self.stt_settings.enabled:
+            self.voice_button.setEnabled(True)
+
+    @Slot()
+    def _on_voice_call_listener_finished(self) -> None:
+        self._voice_call_listener = None
+        if self._voice_call_active:
+            self._voice_call_active = False
+            self._sync_voice_call_button_state()
+            if self.stt_settings.enabled:
+                self.voice_button.setEnabled(True)
+
+    @Slot()
+    def _on_voice_call_user_speaking(self) -> None:
+        if not self.stt_settings.voice_call_interrupt_tts:
+            return
+        try:
+            self.tts_provider.stop_playback()
+        except Exception as exc:  # noqa: BLE001
+            debug_log("PetWindow", "通话模式打断 TTS 失败", {"error": str(exc)})
+        self.voice_playback_controller.discard_prepared()
+
+    @Slot(str)
+    def _on_voice_call_utterance_ready(self, recording_path: str) -> None:
+        if self._voice_call_transcribe_thread is not None:
+            return
+        worker = TranscribePathWorker(recording_path, self.stt_settings, self)
+        self._voice_call_transcribe_thread = worker
+        worker.finished.connect(self._on_voice_call_transcribe_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._clear_voice_call_transcribe_thread)
+        worker.start()
+
+    @Slot(object)
+    def _on_voice_call_transcribe_finished(self, result: VoiceTranscribeResult) -> None:
+        if not result.success:
+            debug_log("PetWindow", "通话识别失败", {"error": result.error_message})
+            self.set_speech(result.error_message or "识别失败，请再说一次")
+            return
+        text = result.text.strip()
+        if not text:
+            self.set_speech("没听清，请再说一次")
+            return
+        if self.worker_thread is not None:
+            self.set_speech("她在回复，请稍等…")
+            return
+        self.input_edit.setText(text)
+        self._begin_interaction("voice_call")
+        self.send_message("voice_call")
+
+    @Slot(str)
+    def _on_voice_call_error(self, message: str) -> None:
+        self._stop_voice_call_mode()
+        QMessageBox.warning(self, "语音通话", message)
+
+    def _clear_voice_call_transcribe_thread(self) -> None:
+        self._voice_call_transcribe_thread = None
+        if self._voice_call_active:
+            self.set_speech("通话中，请说话…")
+
     def _handle_voice_button_clicked(self) -> None:
         self._mark_user_activity()
+        if self._voice_call_active:
+            return
         if not self._voice_input_available():
             return
         if self._voice_recording:
@@ -3023,6 +3172,8 @@ class PetWindow(QWidget):
             self.memory_curation_settings = dialog.result_memory_curation_settings
             self.debug_log_settings = dialog.result_debug_log_settings
             self.stt_settings = dialog.result_stt_settings
+            self._stop_voice_call_mode()
+            self._sync_voice_call_button_state()
             self._sync_proactive_care_timer()
             if hasattr(self, "tray_icon"):
                 self.tray_icon.setContextMenu(self._build_menu())
@@ -3057,6 +3208,8 @@ class PetWindow(QWidget):
                 if self.stt_settings.enabled
                 else "语音输入已在设置中关闭"
             )
+        self._stop_voice_call_mode()
+        self._sync_voice_call_button_state()
         self._sync_proactive_care_timer()
         disconnect_tts_error_signal = getattr(self, "_disconnect_tts_error_signal", None)
         if callable(disconnect_tts_error_signal):

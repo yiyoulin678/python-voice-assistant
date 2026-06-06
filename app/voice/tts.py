@@ -101,6 +101,9 @@ class TTSProvider(Protocol):
     def warm_up_playback(self) -> None:
         """提前初始化本地播放器，避免第一句朗读承担冷启动成本。"""
 
+    def stop_playback(self, *, notify_callbacks: bool = False) -> None:
+        """立即停止当前与排队的语音播放（用于通话打断）。"""
+
     def close(self) -> None:
         """释放 Provider 自己启动的本地服务。"""
 
@@ -159,6 +162,10 @@ class NullTTSProvider:
 
     def warm_up_playback(self) -> None:
         debug_log("TTS", "静音 Provider 跳过播放器预热")
+
+    def stop_playback(self, *, notify_callbacks: bool = False) -> None:
+        _ = notify_callbacks
+        debug_log("TTS", "静音 Provider 跳过停止播放")
 
     def close(self) -> None:
         debug_log("TTS", "静音 Provider 无需关闭")
@@ -449,6 +456,29 @@ class GPTSoVITSTTSProvider(QObject):
         if handle.audio_path is not None:
             self._schedule_audio_cleanup(handle.audio_path)
             handle.audio_path = None
+
+    def stop_playback(self, *, notify_callbacks: bool = False) -> None:
+        """停止流式与文件播放，清空排队音频。"""
+        self._reset_streaming_state()
+        if self._player is not None:
+            self._release_player_source()
+        current_path = self._current_audio
+        current_started = self._current_started
+        current_finished = self._current_finished
+        self._reset_current_audio_state()
+        if current_path is not None:
+            self._schedule_audio_cleanup(current_path)
+            if notify_callbacks:
+                self._started.emit(current_started)
+                self._finished.emit(current_finished)
+        pending = self._pending_audio
+        self._pending_audio = []
+        for audio_path, on_started, on_finished, _prepared in pending:
+            self._schedule_audio_cleanup(audio_path)
+            if notify_callbacks:
+                self._started.emit(on_started)
+                self._finished.emit(on_finished)
+        debug_log("TTS", "已停止全部排队播放", {"notify_callbacks": notify_callbacks})
 
     def warm_up_playback(self) -> None:
         """把 Qt Multimedia 的冷启动提前到空闲阶段完成。"""

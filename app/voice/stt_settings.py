@@ -11,6 +11,11 @@ DTYPE = "int16"
 SILENCE_RMS_THRESHOLD = 0.0015
 SILENCE_PEAK_THRESHOLD = 0.006
 MIN_RECORDING_SECONDS = 0.45
+VOICE_CALL_SILENCE_SECONDS = 0.75
+VOICE_CALL_MIN_UTTERANCE_SECONDS = 0.35
+VOICE_CALL_MAX_UTTERANCE_SECONDS = 45.0
+VOICE_CALL_SPEECH_RMS_THRESHOLD = 0.006
+VOICE_CALL_SPEECH_PEAK_THRESHOLD = 0.01
 WHISPER_NO_SPEECH_PROB_THRESHOLD = 0.72
 DEFAULT_WHISPER_MODEL_NAME = "base"
 DEFAULT_WHISPER_LANGUAGE = "zh"
@@ -29,6 +34,9 @@ class STTSettings:
     model_name: str = DEFAULT_WHISPER_MODEL_NAME
     language: str = DEFAULT_WHISPER_LANGUAGE
     input_device_index: int | None = None
+    voice_call_enabled: bool = True
+    voice_call_silence_seconds: float = VOICE_CALL_SILENCE_SECONDS
+    voice_call_interrupt_tts: bool = True
 
     def recordings_dir(self, base_dir: Path) -> Path:
         return base_dir / "data" / "recordings"

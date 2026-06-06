@@ -601,6 +601,12 @@ class SettingsDialog(QDialog):
         self.stt_enabled_check = QCheckBox("启用语音输入（Whisper）", tab)
         self.stt_enabled_check.setChecked(settings.enabled)
 
+        self.stt_voice_call_enabled_check = QCheckBox("启用语音通话模式（VAD 自动送话）", tab)
+        self.stt_voice_call_enabled_check.setChecked(settings.voice_call_enabled)
+
+        self.stt_voice_call_interrupt_check = QCheckBox("通话时检测到你说话则打断 TTS", tab)
+        self.stt_voice_call_interrupt_check.setChecked(settings.voice_call_interrupt_tts)
+
         self.stt_input_device_combo = QComboBox(tab)
         self.stt_refresh_devices_button = QPushButton("刷新设备列表", tab)
         self.stt_refresh_devices_button.clicked.connect(self._refresh_stt_input_devices)
@@ -622,7 +628,7 @@ class SettingsDialog(QDialog):
             "选择录音用的麦克风；「系统默认」使用 Windows 当前默认输入设备。\n"
             "若提示读不到声音：在 Windows 声音设置里调高该麦克风的输入音量；"
             "使用 Voicemeeter 时请确认路由到所选设备；实体麦优先选名称含 Microphone 的项。\n"
-            "保存后桌宠「语音」按钮将使用所选设备。"
+            "「语音」为按住/点击录音；「通话」为持续听麦克风，停顿后自动识别送话。"
         )
         stt_hint.setWordWrap(True)
 
@@ -630,6 +636,8 @@ class SettingsDialog(QDialog):
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.stt_enabled_check)
+        form_layout.addRow("", self.stt_voice_call_enabled_check)
+        form_layout.addRow("", self.stt_voice_call_interrupt_check)
         form_layout.addRow("麦克风", self.stt_input_device_combo)
         form_layout.addRow("", self.stt_refresh_devices_button)
         form_layout.addRow("Whisper 模型", self.stt_model_edit)
@@ -680,6 +688,8 @@ class SettingsDialog(QDialog):
             model_name=model_name,
             language=language,
             input_device_index=input_device_index,
+            voice_call_enabled=self.stt_voice_call_enabled_check.isChecked(),
+            voice_call_interrupt_tts=self.stt_voice_call_interrupt_check.isChecked(),
         )
 
     def _build_privacy_tab(

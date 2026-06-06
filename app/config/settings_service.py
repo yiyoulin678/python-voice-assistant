@@ -26,6 +26,7 @@ from app.agent.proactive_care import (
 from app.voice.stt_settings import (
     DEFAULT_WHISPER_LANGUAGE,
     DEFAULT_WHISPER_MODEL_NAME,
+    VOICE_CALL_SILENCE_SECONDS,
     STTSettings,
 )
 from app.voice.tts import (
@@ -421,11 +422,19 @@ class AppSettingsService:
                 input_device_index = int(device_raw)
             except (TypeError, ValueError):
                 input_device_index = None
+        try:
+            silence_seconds = float(data.get("voice_call_silence_seconds", VOICE_CALL_SILENCE_SECONDS))
+        except (TypeError, ValueError):
+            silence_seconds = VOICE_CALL_SILENCE_SECONDS
+        silence_seconds = max(0.35, min(2.0, silence_seconds))
         return STTSettings(
             enabled=_bool_value(data.get("enabled"), True),
             model_name=str(data.get("model_name", DEFAULT_WHISPER_MODEL_NAME)).strip() or DEFAULT_WHISPER_MODEL_NAME,
             language=str(data.get("language", DEFAULT_WHISPER_LANGUAGE)).strip() or DEFAULT_WHISPER_LANGUAGE,
             input_device_index=input_device_index,
+            voice_call_enabled=_bool_value(data.get("voice_call_enabled"), True),
+            voice_call_silence_seconds=silence_seconds,
+            voice_call_interrupt_tts=_bool_value(data.get("voice_call_interrupt_tts"), True),
         )
 
     def save_stt_settings(self, settings: STTSettings) -> None:
@@ -436,6 +445,9 @@ class AppSettingsService:
                 "model_name": settings.model_name.strip(),
                 "language": settings.language.strip(),
                 "input_device_index": settings.input_device_index,
+                "voice_call_enabled": bool(settings.voice_call_enabled),
+                "voice_call_silence_seconds": float(settings.voice_call_silence_seconds),
+                "voice_call_interrupt_tts": bool(settings.voice_call_interrupt_tts),
             },
         )
 
