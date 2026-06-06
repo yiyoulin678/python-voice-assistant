@@ -101,6 +101,9 @@ class TTSProvider(Protocol):
     def warm_up_playback(self) -> None:
         """提前初始化本地播放器，避免第一句朗读承担冷启动成本。"""
 
+    def warm_up_synthesis(self) -> None:
+        """后台预热合成服务（探测端口、切换权重），不阻塞聊天。"""
+
     def stop_playback(self, *, notify_callbacks: bool = False) -> None:
         """立即停止当前与排队的语音播放（用于通话打断）。"""
 
@@ -162,6 +165,9 @@ class NullTTSProvider:
 
     def warm_up_playback(self) -> None:
         debug_log("TTS", "静音 Provider 跳过播放器预热")
+
+    def warm_up_synthesis(self) -> None:
+        debug_log("TTS", "静音 Provider 跳过合成预热")
 
     def stop_playback(self, *, notify_callbacks: bool = False) -> None:
         _ = notify_callbacks
@@ -325,6 +331,8 @@ class GPTSoVITSTTSProvider(QObject):
         self._service_checked = False
         self._server_process: subprocess.Popen[bytes] | subprocess.Popen[str] | None = None
         self._playback_warmup_requested = False
+        self._synthesis_warmup_lock = threading.Lock()
+        self._synthesis_warmup_in_progress = False
         self._streaming_player: StreamingPCMPlayer | None = None
         self._stream_request: _TTSRequest | None = None
         self._stream_player_sample_rate: int | None = None
@@ -512,6 +520,40 @@ class GPTSoVITSTTSProvider(QObject):
             self._failed.emit(f"Qt 多媒体播放器预热失败：{exc}")
         finally:
             self._playback_warmup_requested = False
+
+    def warm_up_synthesis(self) -> None:
+        """把 GPT-SoVITS 服务探测与权重切换提前到空闲阶段完成。"""
+
+        with self._synthesis_warmup_lock:
+            if self._synthesis_warmup_in_progress:
+                debug_log("TTS", "合成预热已在进行，跳过重复请求")
+                return
+            self._synthesis_warmup_in_progress = True
+        debug_log("TTS", "安排后台合成预热")
+        threading.Thread(target=self._warm_up_synthesis_worker, daemon=True).start()
+
+    def _warm_up_synthesis_worker(self) -> None:
+        started_at = time.perf_counter()
+        try:
+            def fail(message: str) -> None:
+                debug_log("TTS", "合成预热失败", {"message": message})
+
+            if self._warm_up_synthesis_resources(fail):
+                debug_log(
+                    "TTS",
+                    "合成预热完成",
+                    {"elapsed_ms": int((time.perf_counter() - started_at) * 1000)},
+                )
+        except Exception as exc:  # noqa: BLE001
+            debug_log("TTS", "合成预热异常", {"error": str(exc)})
+        finally:
+            with self._synthesis_warmup_lock:
+                self._synthesis_warmup_in_progress = False
+
+    def _warm_up_synthesis_resources(self, fail_callback: Callable[[str], None]) -> bool:
+        if not self._ensure_service_available(fail_callback):
+            return False
+        return self._ensure_character_weights(fail_callback)
 
     def _queue_request(self, request: _TTSRequest) -> None:
         with self._request_lock:
@@ -1364,6 +1406,14 @@ class GenieTTSProvider(GPTSoVITSTTSProvider):
         super().__init__(settings)
         self._loaded_character_name: str | None = None
         self._reference_audio_key: str | None = None
+
+    def _warm_up_synthesis_resources(self, fail_callback: Callable[[str], None]) -> bool:
+        if not self._ensure_service_available(fail_callback):
+            return False
+        reference = self._select_reference(None)
+        if not self._ensure_character_model(reference.ref_lang, fail_callback):
+            return False
+        return self._ensure_reference_audio(reference, fail_callback)
 
     def _request_audio(self, tts_request: _TTSRequest) -> None:
         try:

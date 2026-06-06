@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 import types
 import urllib.error
 import uuid
@@ -625,6 +626,31 @@ def test_voice_playback_controller_ignores_prepare_error() -> None:
     controller.prepare_next(ChatSegment("次の一段", "中性"))
 
     assert errors == ["预生成失败，已继续字幕流程：prepare down"]
+
+
+def test_tts_warm_up_synthesis_runs_service_and_weight_warmup(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
+    calls: list[str] = []
+
+    def fake_ensure_service(_self: object, fail: object) -> bool:
+        calls.append("service")
+        return True
+
+    def fake_ensure_weights(_self: object, fail: object) -> bool:
+        calls.append("weights")
+        return True
+
+    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_service_available", fake_ensure_service)
+    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_character_weights", fake_ensure_weights)
+
+    provider.warm_up_synthesis()
+    provider.warm_up_synthesis()
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not calls:
+        time.sleep(0.05)
+
+    assert calls == ["service", "weights"]
 
 
 def _minimal_tts_settings(

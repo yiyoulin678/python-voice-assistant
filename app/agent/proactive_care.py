@@ -12,7 +12,7 @@ PROACTIVE_MIN_COOLDOWN_MINUTES = 1
 PROACTIVE_MAX_COOLDOWN_MINUTES = 120
 PROACTIVE_MIN_SCREEN_CONTEXT_BATCH_LIMIT = 1
 PROACTIVE_MAX_SCREEN_CONTEXT_BATCH_LIMIT = 20
-PROACTIVE_TIMER_POLL_INTERVAL_MS = 10_000
+PROACTIVE_TIMER_POLL_INTERVAL_MS = 1_000
 PROACTIVE_TIMER_DUE_GRACE_SECONDS = 1.0
 PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER = "[已抓取屏幕上下文]"
 PROACTIVE_TOPIC_HISTORY_MARKER = "[主动找话题]"
@@ -78,6 +78,7 @@ def compute_proactive_care_countdown_seconds(
     screen_context_allowed: bool,
     screen_context_count: int,
     screen_context_batch_started_at: float | None,
+    last_proactive_screen_context_at: float | None = None,
 ) -> int | None:
     """返回距离下次可主动搭话还剩多少秒；None 表示功能未开启。"""
     normalized = settings.normalized()
@@ -99,7 +100,15 @@ def compute_proactive_care_countdown_seconds(
 
     if screen_context_allowed:
         if screen_context_count <= 0 or screen_context_batch_started_at is None:
-            waits.append(check_interval_seconds)
+            waits.append(
+                _seconds_until_proactive_screen_batch_ready(
+                    now=now,
+                    idle_wait=idle_wait,
+                    check_interval_seconds=check_interval_seconds,
+                    cooldown_seconds=cooldown_seconds,
+                    last_proactive_screen_context_at=last_proactive_screen_context_at,
+                )
+            )
         else:
             batch_wait = cooldown_seconds - (now - screen_context_batch_started_at)
             if batch_wait > PROACTIVE_TIMER_DUE_GRACE_SECONDS:
@@ -108,6 +117,25 @@ def compute_proactive_care_countdown_seconds(
     if not waits:
         return 0
     return max(0, int(math.ceil(max(waits))))
+
+
+def _seconds_until_proactive_screen_batch_ready(
+    *,
+    now: float,
+    idle_wait: float,
+    check_interval_seconds: float,
+    cooldown_seconds: float,
+    last_proactive_screen_context_at: float | None,
+) -> float:
+    """估算「截到第一批图 + 攒满批次冷却」还要多久。"""
+    if idle_wait > PROACTIVE_TIMER_DUE_GRACE_SECONDS:
+        return idle_wait + cooldown_seconds
+    if last_proactive_screen_context_at is None:
+        return cooldown_seconds
+    next_capture_wait = check_interval_seconds - (now - last_proactive_screen_context_at)
+    if next_capture_wait > PROACTIVE_TIMER_DUE_GRACE_SECONDS:
+        return next_capture_wait + cooldown_seconds
+    return cooldown_seconds
 
 
 def format_proactive_care_countdown_hint(seconds: int | None) -> str:

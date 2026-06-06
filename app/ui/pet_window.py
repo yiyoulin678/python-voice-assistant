@@ -298,10 +298,7 @@ class PetWindow(QWidget):
         self.reminder_timer.timeout.connect(self._check_due_reminders)
         self.proactive_care_timer = QTimer(self)
         self.proactive_care_timer.setInterval(PROACTIVE_TIMER_POLL_INTERVAL_MS)
-        self.proactive_care_timer.timeout.connect(self._check_proactive_care)
-        self._proactive_hint_timer = QTimer(self)
-        self._proactive_hint_timer.setInterval(1000)
-        self._proactive_hint_timer.timeout.connect(self._update_proactive_care_hint)
+        self.proactive_care_timer.timeout.connect(self._on_proactive_care_timer)
         if not self.startup_initializing:
             if self.reminder_settings.enabled:
                 self.reminder_timer.start()
@@ -434,7 +431,7 @@ class PetWindow(QWidget):
         )
         self.speech_timer = self.subtitle_controller.speech_timer
         if not self.startup_initializing:
-            QTimer.singleShot(0, self._warm_up_current_tts_playback)
+            QTimer.singleShot(0, self._warm_up_current_tts)
 
         bubble_header = QHBoxLayout()
         bubble_header.setContentsMargins(0, 0, 0, 0)
@@ -1150,6 +1147,7 @@ class PetWindow(QWidget):
             ):
                 widget.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
                 widget.installEventFilter(self)
+        self._update_proactive_care_hint()
         self._layout_stage()
 
     def _layout_music_lyrics_overlay(
@@ -2132,6 +2130,10 @@ class PetWindow(QWidget):
         self.subtitle_controller.clear_queued_reply_segments_for_action_resolution()
 
     @Slot()
+    def _on_proactive_care_timer(self) -> None:
+        self._update_proactive_care_hint()
+        self._check_proactive_care()
+
     def _check_proactive_care(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
@@ -2170,6 +2172,7 @@ class PetWindow(QWidget):
             screen_context_allowed=self._proactive_screen_context_allowed(),
             screen_context_count=len(self.proactive_screen_contexts),
             screen_context_batch_started_at=self.proactive_screen_context_batch_started_at,
+            last_proactive_screen_context_at=self.last_proactive_screen_context_at,
         )
 
     def _update_proactive_care_hint(self) -> None:
@@ -2334,12 +2337,9 @@ class PetWindow(QWidget):
         if self._proactive_care_enabled():
             if not self.proactive_care_timer.isActive():
                 self.proactive_care_timer.start()
-            if not self._proactive_hint_timer.isActive():
-                self._proactive_hint_timer.start()
             self._update_proactive_care_hint()
         else:
             self.proactive_care_timer.stop()
-            self._proactive_hint_timer.stop()
             self._clear_proactive_screen_context_batch("disabled")
             self._update_proactive_care_hint()
 
@@ -2693,7 +2693,7 @@ class PetWindow(QWidget):
         self.voice_playback_controller.set_provider(services.tts_provider)
         self._connect_tts_error_signal(services.tts_provider)
         self._connect_live2d_tts_signals(services.tts_provider)
-        self._warm_up_tts_playback(services.tts_provider)
+        self._warm_up_tts(services.tts_provider)
         self.tool_registry = services.tool_registry
         self.free_access_enabled = self.tool_registry.free_access_enabled
         self.agent_runtime.tools = services.tool_registry
@@ -2702,7 +2702,6 @@ class PetWindow(QWidget):
         self.mcp_settings = services.mcp_settings
 
         self.startup_initializing = False
-        self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
         self.subtitle_controller.cancel_reply_flow(self.character_profile.initial_message)
         self._set_busy(False)
         self.reminder_timer.start()
@@ -2733,9 +2732,9 @@ class PetWindow(QWidget):
     @Slot(str)
     def handle_deferred_startup_failed(self, error: str) -> None:
         self.startup_initializing = False
-        self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
         self.subtitle_controller.cancel_reply_flow(f"初始化失败：{error}")
         self._set_busy(False)
+        self._sync_proactive_care_timer()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log("Startup", "后台启动服务失败", {"error": error})
@@ -2817,8 +2816,12 @@ class PetWindow(QWidget):
             return
         self.portrait_controller.detach_speech_audio()
 
-    def _warm_up_current_tts_playback(self) -> None:
-        self._warm_up_tts_playback(self.tts_provider)
+    def _warm_up_current_tts(self) -> None:
+        self._warm_up_tts(self.tts_provider)
+
+    def _warm_up_tts(self, provider: TTSProvider) -> None:
+        self._warm_up_tts_playback(provider)
+        self._warm_up_tts_synthesis(provider)
 
     def _warm_up_tts_playback(self, provider: TTSProvider) -> None:
         warm_up = getattr(provider, "warm_up_playback", None)
@@ -2830,6 +2833,22 @@ class PetWindow(QWidget):
             debug_log(
                 "TTS",
                 "播放器预热请求失败",
+                {
+                    "provider": type(provider).__name__,
+                    "error": str(exc),
+                },
+            )
+
+    def _warm_up_tts_synthesis(self, provider: TTSProvider) -> None:
+        warm_up = getattr(provider, "warm_up_synthesis", None)
+        if not callable(warm_up):
+            return
+        try:
+            warm_up()
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "TTS",
+                "合成预热请求失败",
                 {
                     "provider": type(provider).__name__,
                     "error": str(exc),
@@ -3169,7 +3188,7 @@ class PetWindow(QWidget):
         if callable(connect_tts_error_signal):
             connect_tts_error_signal(new_tts_provider)
         self._connect_live2d_tts_signals(new_tts_provider)
-        self._warm_up_tts_playback(new_tts_provider)
+        self._warm_up_tts(new_tts_provider)
         self._apply_character(selected_profile)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
@@ -3414,6 +3433,8 @@ class PetWindow(QWidget):
     def _show_reply_segments(self, segments: list[ChatSegment]) -> None:
         self._exit_reply_history_review(update_buttons=False)
         self._remember_reply_history_segments(segments)
+        if segments:
+            self.voice_playback_controller.prepare_next(segments[0])
         self.subtitle_controller.show_segments(segments)
 
     def _apply_pet_ui_settings(self, settings) -> None:  # noqa: ANN001 — PetUISettings
@@ -3479,6 +3500,7 @@ class PetWindow(QWidget):
             self.input_backdrop.show()
         self._ui_controls_visible_applied = False
         self._layout_stage()
+        self._update_proactive_care_hint()
 
     def _is_music_sing_along_blocked(self) -> bool:
         if getattr(self, "startup_initializing", False):
@@ -3749,14 +3771,12 @@ class PetWindow(QWidget):
         self.agent_runtime.update_character(self.system_prompt, profile.reply_tones, profile.portrait_choices)
         self.setWindowTitle(profile.display_name)
         self.name_label.setText(profile.display_name)
-        self.input_edit.setPlaceholderText(f"和{profile.display_name}说点什么...")
         if self._should_use_live2d(profile) != self._using_live2d:
             self._replace_portrait_controller(profile)
             portrait_pixmap = self.portrait_controller.pixmap
         else:
             portrait_pixmap = self.portrait_controller.set_profile(profile)
         if hasattr(self, "tray_icon"):
-            self.tray_icon.setToolTip(profile.display_name)
             self._apply_tray_icon()
 
         self.history_store = self._create_history_store(profile)
@@ -3768,6 +3788,7 @@ class PetWindow(QWidget):
         if profile.id != previous_character_id:
             self.messages = []
             self.subtitle_controller.cancel_reply_flow(profile.initial_message)
+        self._update_proactive_care_hint()
 
     def _create_history_store(self, profile: CharacterProfile) -> ChatHistoryStore:
         history_path = self.base_dir / "data" / "chat_history" / f"{profile.id}.jsonl"
