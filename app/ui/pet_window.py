@@ -69,8 +69,11 @@ from app.core.debug_log import debug_log, summarize_messages
 from app.ui.history_window import HistoryWindow
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
+    PROACTIVE_TOPIC_HISTORY_MARKER,
     PROACTIVE_TIMER_DUE_GRACE_SECONDS,
     PROACTIVE_TIMER_POLL_INTERVAL_MS,
+    compute_proactive_care_countdown_seconds,
+    format_proactive_care_countdown_hint,
 )
 from app.agent.screen_observation import (
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -131,11 +134,9 @@ from app.voice import VoicePlaybackController
 from app.voice import audio_io, speech_to_text
 from app.voice.history_audio_player import HistoryAudioPlayer
 from app.voice.stt_settings import STTSettings
-from app.voice.voice_call_listener import VoiceCallListener
 from app.voice.voice_workers import (
     StartRecordingWorker,
     StopRecordTranscribeWorker,
-    TranscribePathWorker,
     VoiceTranscribeResult,
 )
 
@@ -254,9 +255,6 @@ class PetWindow(QWidget):
         self._voice_rec_worker: QObject | None = None
         self._voice_transcribe_thread: QThread | None = None
         self._voice_transcribe_worker: QObject | None = None
-        self._voice_call_active = False
-        self._voice_call_listener: VoiceCallListener | None = None
-        self._voice_call_transcribe_thread: QThread | None = None
         self.memory_curation_thread: QThread | None = None
         self.memory_curation_worker: MemoryCurationWorker | None = None
         self.memory_curation_mode = ""
@@ -301,6 +299,9 @@ class PetWindow(QWidget):
         self.proactive_care_timer = QTimer(self)
         self.proactive_care_timer.setInterval(PROACTIVE_TIMER_POLL_INTERVAL_MS)
         self.proactive_care_timer.timeout.connect(self._check_proactive_care)
+        self._proactive_hint_timer = QTimer(self)
+        self._proactive_hint_timer.setInterval(1000)
+        self._proactive_hint_timer.timeout.connect(self._update_proactive_care_hint)
         if not self.startup_initializing:
             if self.reminder_settings.enabled:
                 self.reminder_timer.start()
@@ -504,14 +505,6 @@ class PetWindow(QWidget):
             self.voice_button.setEnabled(False)
             self.voice_button.setToolTip("语音输入已在 data/config/system_config.yaml 中关闭")
 
-        self.voice_call_button = QPushButton("通话", self.input_bar)
-        self.voice_call_button.setObjectName("voiceCallButton")
-        self.voice_call_button.setFixedHeight(INPUT_CONTROL_HEIGHT)
-        self.voice_call_button.setCheckable(True)
-        self.voice_call_button.setToolTip("开启后持续听麦克风，说完自动识别（无需按住）")
-        self.voice_call_button.clicked.connect(self._handle_voice_call_button_clicked)
-        self._sync_voice_call_button_state()
-
         self.tool_confirmation_panel = ToolConfirmationPanel(
             self.confirm_pending_action,
             self.cancel_pending_action,
@@ -525,7 +518,6 @@ class PetWindow(QWidget):
         input_layout.setSpacing(8)
         input_layout.addWidget(self.input_edit, 1)
         input_layout.addWidget(self.tool_confirmation_panel)
-        input_layout.addWidget(self.voice_call_button)
         input_layout.addWidget(self.voice_button)
         input_layout.addWidget(self.screenshot_button)
         input_layout.addWidget(self.send_button)
@@ -607,6 +599,8 @@ class PetWindow(QWidget):
                 self._clear_manual_screen_observation()
                 return True
             return super().eventFilter(watched, event)
+        if isinstance(event, QMouseEvent) and self._is_drag_exempt_widget(watched):
+            return super().eventFilter(watched, event)
         if isinstance(event, QMouseEvent):
             if event.type() == QEvent.Type.MouseButtonPress:
                 return self._handle_mouse_press(event)
@@ -631,10 +625,29 @@ class PetWindow(QWidget):
 
     @Slot()
     def close_external_tools(self) -> None:
-        self._stop_voice_call_mode()
         self.close_tts_tools()
         self.close_mcp_tools()
         self.close_plugins()
+
+    def _is_drag_exempt_widget(self, watched: QObject) -> bool:
+        """输入栏按钮不走窗口拖动逻辑，否则 clicked 信号会被吞掉。"""
+        exempt_widgets = (
+            getattr(self, "voice_button", None),
+            getattr(self, "send_button", None),
+            getattr(self, "screenshot_button", None),
+            getattr(self, "input_edit", None),
+            getattr(self, "confirm_action_button", None),
+            getattr(self, "cancel_action_button", None),
+            getattr(self, "reply_history_previous_button", None),
+            getattr(self, "reply_history_next_button", None),
+            getattr(self, "tool_confirmation_panel", None),
+        )
+        if watched in exempt_widgets:
+            return True
+        tool_panel = getattr(self, "tool_confirmation_panel", None)
+        if tool_panel is not None and isinstance(watched, QWidget) and watched.parent() is tool_panel:
+            return True
+        return False
 
     @Slot()
     def close_tts_tools(self) -> None:
@@ -1400,6 +1413,7 @@ class PetWindow(QWidget):
 
     def _mark_user_activity(self) -> None:
         self.last_user_activity_at = time.perf_counter()
+        self._update_proactive_care_hint()
 
     @Slot()
     def _handle_return_pressed(self) -> None:
@@ -1416,11 +1430,18 @@ class PetWindow(QWidget):
         self.send_message("send_button_clicked")
 
     def _voice_input_available(self) -> bool:
-        return (
-            self.stt_settings.enabled
-            and not getattr(self, "startup_initializing", False)
-            and self.worker_thread is None
-        )
+        return self._voice_unavailable_reason() is None
+
+    def _voice_unavailable_reason(self) -> str | None:
+        if not self.stt_settings.enabled:
+            return "语音输入已在设置中关闭。"
+        if getattr(self, "startup_initializing", False):
+            return "应用仍在初始化，请稍候再试。"
+        if self._voice_transcribe_thread is not None:
+            return "正在识别上一条语音，请稍候。"
+        if self.worker_thread is not None:
+            return "正在处理上一条消息，请稍后再用语音输入。"
+        return None
 
     @Slot()
     def _on_live2d_long_press_start(self) -> None:
@@ -1442,143 +1463,12 @@ class PetWindow(QWidget):
         if self._voice_rec_starting:
             self._voice_long_press_cancel_pending = True
 
-    def _sync_voice_call_button_state(self) -> None:
-        if not hasattr(self, "voice_call_button"):
-            return
-        try:
-            available = (
-                self.stt_settings.enabled
-                and self.stt_settings.voice_call_enabled
-                and bool(audio_io.list_input_devices())
-            )
-        except audio_io.AudioIOError:
-            available = False
-        self.voice_call_button.setVisible(self.stt_settings.enabled)
-        self.voice_call_button.setEnabled(available and not self._voice_recording)
-        if not self.stt_settings.voice_call_enabled:
-            self.voice_call_button.setToolTip("语音通话已在设置中关闭")
-        elif not available:
-            self.voice_call_button.setToolTip("需要可用麦克风才能开启通话")
-        else:
-            self.voice_call_button.setToolTip("开启后持续听麦克风，说完自动识别（无需按住）")
-        if self._voice_call_active:
-            self.voice_call_button.setChecked(True)
-            self.voice_call_button.setText("通话中")
-        else:
-            self.voice_call_button.setChecked(False)
-            self.voice_call_button.setText("通话")
-
-    def _handle_voice_call_button_clicked(self) -> None:
-        self._mark_user_activity()
-        if self.voice_call_button.isChecked():
-            self._start_voice_call_mode()
-            return
-        self._stop_voice_call_mode()
-
-    def _start_voice_call_mode(self) -> None:
-        if not self.stt_settings.enabled or not self.stt_settings.voice_call_enabled:
-            self.voice_call_button.setChecked(False)
-            QMessageBox.information(self, "语音通话", "请先在设置中启用语音输入与语音通话。")
-            return
-        if self._voice_recording or self._voice_rec_starting:
-            self.voice_call_button.setChecked(False)
-            QMessageBox.information(self, "语音通话", "请先结束当前录音。")
-            return
-        if self._voice_call_listener is not None:
-            return
-        listener = VoiceCallListener(
-            self.stt_settings,
-            self.stt_settings.recordings_dir(self.base_dir),
-            self,
-        )
-        listener.status_changed.connect(self.set_speech)
-        listener.user_started_speaking.connect(self._on_voice_call_user_speaking)
-        listener.utterance_ready.connect(self._on_voice_call_utterance_ready)
-        listener.error_occurred.connect(self._on_voice_call_error)
-        listener.finished.connect(listener.deleteLater)
-        listener.finished.connect(self._on_voice_call_listener_finished)
-        self._voice_call_listener = listener
-        self._voice_call_active = True
-        self._sync_voice_call_button_state()
-        self.voice_button.setEnabled(False)
-        listener.start()
-
-    def _stop_voice_call_mode(self) -> None:
-        listener = self._voice_call_listener
-        if listener is not None:
-            listener.stop_listening()
-            if listener.isRunning():
-                listener.wait(2000)
-            self._voice_call_listener = None
-        self._voice_call_active = False
-        if hasattr(self, "voice_call_button"):
-            self.voice_call_button.setChecked(False)
-        self._sync_voice_call_button_state()
-        if self.stt_settings.enabled:
-            self.voice_button.setEnabled(True)
-
-    @Slot()
-    def _on_voice_call_listener_finished(self) -> None:
-        self._voice_call_listener = None
-        if self._voice_call_active:
-            self._voice_call_active = False
-            self._sync_voice_call_button_state()
-            if self.stt_settings.enabled:
-                self.voice_button.setEnabled(True)
-
-    @Slot()
-    def _on_voice_call_user_speaking(self) -> None:
-        if not self.stt_settings.voice_call_interrupt_tts:
-            return
-        try:
-            self.tts_provider.stop_playback()
-        except Exception as exc:  # noqa: BLE001
-            debug_log("PetWindow", "通话模式打断 TTS 失败", {"error": str(exc)})
-        self.voice_playback_controller.discard_prepared()
-
-    @Slot(str)
-    def _on_voice_call_utterance_ready(self, recording_path: str) -> None:
-        if self._voice_call_transcribe_thread is not None:
-            return
-        worker = TranscribePathWorker(recording_path, self.stt_settings, self)
-        self._voice_call_transcribe_thread = worker
-        worker.finished.connect(self._on_voice_call_transcribe_finished)
-        worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(self._clear_voice_call_transcribe_thread)
-        worker.start()
-
-    @Slot(object)
-    def _on_voice_call_transcribe_finished(self, result: VoiceTranscribeResult) -> None:
-        if not result.success:
-            debug_log("PetWindow", "通话识别失败", {"error": result.error_message})
-            self.set_speech(result.error_message or "识别失败，请再说一次")
-            return
-        text = result.text.strip()
-        if not text:
-            self.set_speech("没听清，请再说一次")
-            return
-        if self.worker_thread is not None:
-            self.set_speech("她在回复，请稍等…")
-            return
-        self.input_edit.setText(text)
-        self._begin_interaction("voice_call")
-        self.send_message("voice_call")
-
-    @Slot(str)
-    def _on_voice_call_error(self, message: str) -> None:
-        self._stop_voice_call_mode()
-        QMessageBox.warning(self, "语音通话", message)
-
-    def _clear_voice_call_transcribe_thread(self) -> None:
-        self._voice_call_transcribe_thread = None
-        if self._voice_call_active:
-            self.set_speech("通话中，请说话…")
-
     def _handle_voice_button_clicked(self) -> None:
         self._mark_user_activity()
-        if self._voice_call_active:
-            return
         if not self._voice_input_available():
+            reason = self._voice_unavailable_reason()
+            if reason:
+                self.set_speech(reason)
             return
         if self._voice_recording:
             self._stop_voice_recording()
@@ -1649,6 +1539,7 @@ class PetWindow(QWidget):
             return
         self.input_edit.setText(result.text)
         self.input_edit.setFocus()
+        self.set_speech(self.character_profile.initial_message)
         self._begin_interaction("voice_input")
         self.send_message("voice_input")
 
@@ -2259,12 +2150,46 @@ class PetWindow(QWidget):
             *_build_proactive_visual_observation_jobs(event),
         ]
         self.last_proactive_care_at = now
-        self._record_history("system", PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER)
+        if self._proactive_screen_context_allowed() and self.proactive_screen_contexts:
+            self._record_history("system", PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER)
+        else:
+            self._record_history("system", PROACTIVE_TOPIC_HISTORY_MARKER)
         self._clear_proactive_screen_context_batch("sent")
         self._run_event_worker(event)
+        self._update_proactive_care_hint()
+
+    def _default_input_placeholder(self) -> str:
+        return f"和{self.character_profile.display_name}说点什么..."
+
+    def _proactive_care_countdown_seconds(self) -> int | None:
+        return compute_proactive_care_countdown_seconds(
+            settings=self.proactive_care_settings,
+            now=time.perf_counter(),
+            last_user_activity_at=self.last_user_activity_at,
+            last_proactive_care_at=self.last_proactive_care_at,
+            screen_context_allowed=self._proactive_screen_context_allowed(),
+            screen_context_count=len(self.proactive_screen_contexts),
+            screen_context_batch_started_at=self.proactive_screen_context_batch_started_at,
+        )
+
+    def _update_proactive_care_hint(self) -> None:
+        countdown = self._proactive_care_countdown_seconds()
+        display_name = self.character_profile.display_name
+        if countdown is None or getattr(self, "startup_initializing", False):
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.setToolTip(display_name)
+            if hasattr(self, "input_edit"):
+                self.input_edit.setPlaceholderText(self._default_input_placeholder())
+            return
+
+        hint = format_proactive_care_countdown_hint(countdown)
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.setToolTip(f"{display_name}\n主动搭话：{hint}")
+        if hasattr(self, "input_edit") and not self.input_edit.text().strip():
+            self.input_edit.setPlaceholderText(f"{hint}…")
 
     def _can_run_proactive_care(self) -> bool:
-        if not self._proactive_screen_context_allowed():
+        if not self._proactive_care_enabled():
             return False
         if (
             self.worker_thread is not None
@@ -2273,13 +2198,12 @@ class PetWindow(QWidget):
             or self.pending_tool_action is not None
             or self.pending_screen_observation_messages is not None
             or self.screen_observation_followup_in_progress
-            or self.active_interaction_id
         ):
             return False
         if self.input_edit.text().strip() or self.speech_timer.isActive():
             return False
         subtitle_controller = getattr(self, "subtitle_controller", None)
-        if subtitle_controller is not None and subtitle_controller.current_segment_in_progress():
+        if subtitle_controller is not None and subtitle_controller.is_reply_sequence_active():
             return False
         if subtitle_controller is None and getattr(self, "current_segment_sequence_id", None) is not None and (
             not getattr(self, "current_segment_speech_done", True)
@@ -2340,14 +2264,31 @@ class PetWindow(QWidget):
         )
 
     def _should_send_proactive_care_batch(self, now: float) -> bool:
-        if not self.proactive_screen_contexts:
+        settings = self.proactive_care_settings.normalized()
+        cooldown_seconds = settings.cooldown_minutes * 60
+        check_interval_seconds = settings.check_interval_minutes * 60
+        if (
+            self.last_proactive_care_at is not None
+            and now - self.last_proactive_care_at + PROACTIVE_TIMER_DUE_GRACE_SECONDS
+            < cooldown_seconds
+        ):
             return False
-        if self.proactive_screen_context_batch_started_at is None:
+        if (
+            now - self.last_user_activity_at + PROACTIVE_TIMER_DUE_GRACE_SECONDS
+            < check_interval_seconds
+        ):
             return False
-        return (
-            now - self.proactive_screen_context_batch_started_at
-            >= self.proactive_care_settings.cooldown_minutes * 60
-        )
+
+        if self._proactive_screen_context_allowed():
+            if not self.proactive_screen_contexts:
+                return False
+            if self.proactive_screen_context_batch_started_at is None:
+                return False
+            return (
+                now - self.proactive_screen_context_batch_started_at
+                >= cooldown_seconds
+            )
+        return True
 
     def _build_proactive_care_event(self, now: float | None = None) -> AgentEvent:
         now = time.perf_counter() if now is None else now
@@ -2383,16 +2324,24 @@ class PetWindow(QWidget):
             )
         return AgentEvent(type="proactive_check", payload=payload)
 
+    def _proactive_care_enabled(self) -> bool:
+        return self.proactive_care_settings.normalized().allows_proactive_topics()
+
     def _proactive_screen_context_allowed(self) -> bool:
-        return self.proactive_care_settings.allows_screen_context()
+        return self.proactive_care_settings.normalized().allows_screen_context()
 
     def _sync_proactive_care_timer(self) -> None:
-        if self._proactive_screen_context_allowed():
+        if self._proactive_care_enabled():
             if not self.proactive_care_timer.isActive():
                 self.proactive_care_timer.start()
+            if not self._proactive_hint_timer.isActive():
+                self._proactive_hint_timer.start()
+            self._update_proactive_care_hint()
         else:
             self.proactive_care_timer.stop()
+            self._proactive_hint_timer.stop()
             self._clear_proactive_screen_context_batch("disabled")
+            self._update_proactive_care_hint()
 
     def _clear_proactive_screen_context_batch(self, reason: str) -> None:
         had_batch = bool(self.proactive_screen_contexts)
@@ -2455,6 +2404,7 @@ class PetWindow(QWidget):
         self._clear_active_event()
         if not result.reply.text.strip() and not result.reply.translation.strip() and not result.actions:
             self._log_interaction_stage("event_silent", {"event_type": event.type if event else ""})
+            self._end_interaction("event_silent")
             return
         self._consume_agent_result(result)
         if reminder_id is not None:
@@ -2496,6 +2446,7 @@ class PetWindow(QWidget):
                 )
             )
             self._consume_agent_result(result)
+        self._end_interaction("error")
         if reminder_id is not None:
             self._mark_reminder_completed(reminder_id)
 
@@ -3172,8 +3123,6 @@ class PetWindow(QWidget):
             self.memory_curation_settings = dialog.result_memory_curation_settings
             self.debug_log_settings = dialog.result_debug_log_settings
             self.stt_settings = dialog.result_stt_settings
-            self._stop_voice_call_mode()
-            self._sync_voice_call_button_state()
             self._sync_proactive_care_timer()
             if hasattr(self, "tray_icon"):
                 self.tray_icon.setContextMenu(self._build_menu())
@@ -3208,8 +3157,6 @@ class PetWindow(QWidget):
                 if self.stt_settings.enabled
                 else "语音输入已在设置中关闭"
             )
-        self._stop_voice_call_mode()
-        self._sync_voice_call_button_state()
         self._sync_proactive_care_timer()
         disconnect_tts_error_signal = getattr(self, "_disconnect_tts_error_signal", None)
         if callable(disconnect_tts_error_signal):

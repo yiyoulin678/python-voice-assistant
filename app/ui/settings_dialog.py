@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -99,9 +100,7 @@ from app.voice.stt_settings import (
     STTSettings,
 )
 from app.voice.tts import (
-    DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
-    TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS,
     GPTSoVITSTTSSettings,
     TTSConfigError,
@@ -556,7 +555,6 @@ class SettingsDialog(QDialog):
 
         self.tts_provider_combo = QComboBox(tab)
         self.tts_provider_combo.addItem("GPT-SoVITS（GPU）", TTS_PROVIDER_GPT_SOVITS)
-        self.tts_provider_combo.addItem("Genie TTS（CPU）", TTS_PROVIDER_GENIE)
         provider_index = self.tts_provider_combo.findData(settings.provider)
         self.tts_provider_combo.setCurrentIndex(provider_index if provider_index >= 0 else 0)
 
@@ -601,12 +599,6 @@ class SettingsDialog(QDialog):
         self.stt_enabled_check = QCheckBox("启用语音输入（Whisper）", tab)
         self.stt_enabled_check.setChecked(settings.enabled)
 
-        self.stt_voice_call_enabled_check = QCheckBox("启用语音通话模式（VAD 自动送话）", tab)
-        self.stt_voice_call_enabled_check.setChecked(settings.voice_call_enabled)
-
-        self.stt_voice_call_interrupt_check = QCheckBox("通话时检测到你说话则打断 TTS", tab)
-        self.stt_voice_call_interrupt_check.setChecked(settings.voice_call_interrupt_tts)
-
         self.stt_input_device_combo = QComboBox(tab)
         self.stt_refresh_devices_button = QPushButton("刷新设备列表", tab)
         self.stt_refresh_devices_button.clicked.connect(self._refresh_stt_input_devices)
@@ -628,7 +620,7 @@ class SettingsDialog(QDialog):
             "选择录音用的麦克风；「系统默认」使用 Windows 当前默认输入设备。\n"
             "若提示读不到声音：在 Windows 声音设置里调高该麦克风的输入音量；"
             "使用 Voicemeeter 时请确认路由到所选设备；实体麦优先选名称含 Microphone 的项。\n"
-            "「语音」为按住/点击录音；「通话」为持续听麦克风，停顿后自动识别送话。"
+            "「语音」为点击或长按录音，松手/再次点击后识别为文字。"
         )
         stt_hint.setWordWrap(True)
 
@@ -636,8 +628,6 @@ class SettingsDialog(QDialog):
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.stt_enabled_check)
-        form_layout.addRow("", self.stt_voice_call_enabled_check)
-        form_layout.addRow("", self.stt_voice_call_interrupt_check)
         form_layout.addRow("麦克风", self.stt_input_device_combo)
         form_layout.addRow("", self.stt_refresh_devices_button)
         form_layout.addRow("Whisper 模型", self.stt_model_edit)
@@ -688,8 +678,6 @@ class SettingsDialog(QDialog):
             model_name=model_name,
             language=language,
             input_device_index=input_device_index,
-            voice_call_enabled=self.stt_voice_call_enabled_check.isChecked(),
-            voice_call_interrupt_tts=self.stt_voice_call_interrupt_check.isChecked(),
         )
 
     def _build_privacy_tab(
@@ -703,12 +691,18 @@ class SettingsDialog(QDialog):
             tab,
         )
         self.screen_observation_enabled_check.setChecked(normalized_screen.enabled)
+        normalized_proactive = proactive_care_settings.normalized()
+        self.proactive_topic_enabled_check = QCheckBox(
+            "空闲时主动找话题聊天（无需截图）",
+            tab,
+        )
+        self.proactive_topic_enabled_check.setChecked(normalized_proactive.enabled)
         self.autonomous_screen_observation_check = QCheckBox(
-            "允许 AI 在后台自主观察屏幕（主动关怀）",
+            "主动搭话时附带后台屏幕截图（需开启上方截图权限）",
             tab,
         )
         self.autonomous_screen_observation_check.setChecked(
-            normalized_screen.autonomous_enabled
+            normalized_proactive.screen_context_enabled
         )
         self.screen_observation_enabled_check.toggled.connect(
             self._sync_screen_observation_controls
@@ -746,20 +740,31 @@ class SettingsDialog(QDialog):
         self.proactive_batch_limit_spin.setValue(
             proactive_care_settings.normalized().screen_context_batch_limit
         )
+        self.proactive_topic_enabled_check.toggled.connect(
+            self._sync_proactive_interval_controls
+        )
         self.autonomous_screen_observation_check.toggled.connect(
             self._sync_proactive_interval_controls
         )
         self._sync_proactive_interval_controls(
-            self.autonomous_screen_observation_check.isChecked()
+            self.proactive_topic_enabled_check.isChecked()
+            or self.autonomous_screen_observation_check.isChecked()
         )
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.screen_observation_enabled_check)
+        form_layout.addRow("", self.proactive_topic_enabled_check)
         form_layout.addRow("", self.autonomous_screen_observation_check)
         form_layout.addRow("主动检查间隔", self.proactive_check_interval_spin)
         form_layout.addRow("主动打扰冷却", self.proactive_cooldown_spin)
+        self.proactive_countdown_hint_label = QLabel(
+            "开启后，托盘图标悬停与输入框会显示下次主动搭话的倒计时。",
+            tab,
+        )
+        self.proactive_countdown_hint_label.setWordWrap(True)
+        form_layout.addRow("", self.proactive_countdown_hint_label)
         form_layout.addRow("单次最多发送截图", self.proactive_batch_limit_spin)
         tab.setLayout(form_layout)
         return tab
@@ -902,10 +907,15 @@ class SettingsDialog(QDialog):
 
     @Slot(bool)
     def _sync_proactive_interval_controls(self, enabled: bool) -> None:
-        """主动屏幕获取关闭时，不允许调整主动关怀时间参数。"""
-        self.proactive_check_interval_spin.setEnabled(enabled)
-        self.proactive_cooldown_spin.setEnabled(enabled)
-        self.proactive_batch_limit_spin.setEnabled(enabled)
+        topic_enabled = self.proactive_topic_enabled_check.isChecked()
+        screen_enabled = (
+            self.screen_observation_enabled_check.isChecked()
+            and self.autonomous_screen_observation_check.isChecked()
+        )
+        controls_enabled = topic_enabled or screen_enabled
+        self.proactive_check_interval_spin.setEnabled(controls_enabled)
+        self.proactive_cooldown_spin.setEnabled(controls_enabled)
+        self.proactive_batch_limit_spin.setEnabled(screen_enabled)
 
     def _build_memory_tab(self, memory_store: MemoryStore) -> QWidget:
         tab = QWidget(self)
@@ -1493,11 +1503,12 @@ class SettingsDialog(QDialog):
             self.reply_segment_pause_spin.value(),
         )
         proactive_screen_context_enabled = (
-            self.screen_observation_enabled_check.isChecked()
+            self.proactive_topic_enabled_check.isChecked()
+            and self.screen_observation_enabled_check.isChecked()
             and self.autonomous_screen_observation_check.isChecked()
         )
         self.result_proactive_care_settings = ProactiveCareSettings(
-            enabled=proactive_screen_context_enabled,
+            enabled=self.proactive_topic_enabled_check.isChecked(),
             screen_context_enabled=proactive_screen_context_enabled,
             check_interval_minutes=self.proactive_check_interval_spin.value(),
             cooldown_minutes=self.proactive_cooldown_spin.value(),
@@ -1611,7 +1622,7 @@ class SettingsDialog(QDialog):
         dialog = TTSBundleDownloadDialog(self.base_dir, self)
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.downloaded_work_dir is None:
             return
-        provider = getattr(dialog, "downloaded_provider", None) or TTS_PROVIDER_GPT_SOVITS
+        provider = TTS_PROVIDER_GPT_SOVITS
         provider_index = self.tts_provider_combo.findData(provider)
         if provider_index >= 0:
             self.tts_provider_combo.setCurrentIndex(provider_index)
@@ -1623,10 +1634,7 @@ class SettingsDialog(QDialog):
     def _sync_tts_provider_controls(self) -> None:
         provider = str(self.tts_provider_combo.currentData() or TTS_PROVIDER_GPT_SOVITS)
         self.tts_api_url_edit.setPlaceholderText(_default_tts_api_url(provider))
-        if provider == TTS_PROVIDER_GENIE:
-            self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/genie_tts_server/Genie-TTS Server")
-        else:
-            self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
+        self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
 
     def _import_character_archive(self) -> None:
         if self._character_export_thread is not None:
@@ -1772,9 +1780,9 @@ class SettingsDialog(QDialog):
                 timeout_seconds=self.tts_timeout_spin.value(),
                 provider=provider,
                 work_dir=work_dir,
-                onnx_model_dir=_default_genie_onnx_dir(self.base_dir, selected_profile) if provider == TTS_PROVIDER_GENIE else None,
                 validate_enabled=False,
             )
+            settings = replace(settings, streaming_enabled=True)
         else:
             settings = GPTSoVITSTTSSettings(
                 enabled=enabled,
@@ -1787,14 +1795,10 @@ class SettingsDialog(QDialog):
                 sovits_model_path=self.tts_settings.sovits_model_path,
                 work_dir=work_dir,
                 character_name=self.tts_settings.character_name or "sakura",
-                onnx_model_dir=(
-                    self.tts_settings.onnx_model_dir or _default_genie_onnx_dir(self.base_dir, selected_profile)
-                    if provider == TTS_PROVIDER_GENIE
-                    else None
-                ),
                 ref_lang=ref_lang,
                 text_lang=text_lang,
                 timeout_seconds=self.tts_timeout_spin.value(),
+                streaming_enabled=True,
                 tone_references=self.tts_settings.tone_references,
             )
         if enabled:
@@ -1905,12 +1909,7 @@ def _is_http_url(url: str) -> bool:
 
 
 def _default_tts_api_url(provider: str) -> str:
-    return DEFAULT_GENIE_TTS_API_URL if provider == TTS_PROVIDER_GENIE else DEFAULT_GPT_SOVITS_API_URL
-
-
-def _default_genie_onnx_dir(base_dir: Path, profile: CharacterProfile | None) -> Path:
-    character_id = profile.id if profile is not None else "default"
-    return base_dir / "data" / "tts_bundles" / "onnx" / character_id
+    return DEFAULT_GPT_SOVITS_API_URL
 
 
 def _optional_path(value: str, base_dir: Path) -> Path | None:

@@ -540,11 +540,12 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
 
     assert dialog.result_tts_settings is not None
     assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    assert dialog.result_tts_settings.streaming_enabled is True
     dialog.deleteLater()
     app.processEvents()
 
 
-def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_settings_dialog_download_legacy_genie_provider_is_forced_to_gptsovits(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -558,7 +559,7 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
 
     class DialogStub:
         def __init__(self, *_args, **_kwargs) -> None:
-            self.downloaded_work_dir = root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
+            self.downloaded_work_dir = root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
             self.downloaded_provider = "genie-tts"
 
         def exec(self):  # type: ignore[no-untyped-def]
@@ -584,16 +585,17 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
     dialog._download_gpt_sovits_bundle()
 
     assert dialog.tts_enabled_check.isChecked()
-    assert dialog.tts_provider_combo.currentData() == "genie-tts"
-    assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9881/"
-    assert dialog.tts_work_dir_edit.text().endswith("genie_tts_server")
+    assert dialog.tts_provider_combo.currentData() == "gpt-sovits"
+    assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9880/tts"
+    assert dialog.tts_work_dir_edit.text().endswith("gpt_sovits_v2pro")
 
     dialog.accept()
 
     assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.provider == "genie-tts"
-    assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
-    assert dialog.result_tts_settings.onnx_model_dir == root / "data" / "tts_bundles" / "onnx" / "sakura"
+    assert dialog.result_tts_settings.provider == "gpt-sovits"
+    assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    assert dialog.result_tts_settings.onnx_model_dir is None
+    assert dialog.result_tts_settings.streaming_enabled is True
     dialog.deleteLater()
     app.processEvents()
 

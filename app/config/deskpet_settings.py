@@ -21,7 +21,7 @@ class PetUISettings:
     free_access_enabled: bool = False
     music_plugin_enabled: bool = True
     music_default_source: str = "netease"
-    lyric_sync_offset_seconds: float = 1.2
+    lyric_sync_offset_seconds: float = 0.6
     music_sing_along_enabled: bool = True
     ui_theme: str = DEFAULT_UI_THEME
     desktop_pet_rules_enabled: bool = False
@@ -37,7 +37,7 @@ class PetUISettings:
         try:
             lyric_offset = float(self.lyric_sync_offset_seconds)
         except (TypeError, ValueError):
-            lyric_offset = 1.2
+            lyric_offset = 0.6
         lyric_offset = max(-5.0, min(5.0, lyric_offset))
         return PetUISettings(
             hover_only_ui=bool(self.hover_only_ui),

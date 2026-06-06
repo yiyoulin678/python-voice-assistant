@@ -12,6 +12,7 @@ from app.llm.chat_reply import ChatSegment
 from app.ui.live2d_interaction import Live2DInteractionController
 from app.ui.live2d_lipsync import Live2DLipSyncController
 from app.ui.live2d_input_overlay import Live2DInputOverlay
+from app.ui.live2d_mouse_tracker import Live2DMouseTracker
 from app.ui.live2d_widget import Live2DWidget
 from app.ui.portrait_controller import (
     PORTRAIT_BASE_MAX_HEIGHT,
@@ -81,6 +82,12 @@ class Live2DPortraitController(QObject):
             restore_expression=self._restore_base_expression,
             parent=self,
         )
+        self._mouse_tracker = Live2DMouseTracker(
+            self.live2d_widget,
+            self.parent_widget,
+            live2d_config,
+            parent=self,
+        )
 
     @property
     def portrait_stage_widget(self) -> QWidget:
@@ -111,9 +118,12 @@ class Live2DPortraitController(QObject):
         self.profile = profile
         self._tray_pixmap = self._load_tray_pixmap(profile.default_portrait_path)
         self.pixmap = self._tray_pixmap
-        if profile.live2d is not None and profile.live2d.model_json_path != self.live2d_config.model_json_path:
+        if profile.live2d is not None:
+            previous_model = self.live2d_config.model_json_path
             self.live2d_config = profile.live2d
-            self.live2d_widget.reload_config(profile.live2d)
+            self._mouse_tracker.refresh_config(profile.live2d)
+            if profile.live2d.model_json_path != previous_model:
+                self.live2d_widget.reload_config(profile.live2d)
         self._current_expression = profile.live2d.default_expression if profile.live2d else None
         self.apply_current()
         self._on_portrait_changed(self.pixmap)
@@ -172,6 +182,7 @@ class Live2DPortraitController(QObject):
         self.live2d_widget.clear_expression_overlays()
 
     def dispose(self) -> None:
+        self._mouse_tracker.stop()
         self._interaction.stop()
 
     def _apply_speaking_expressions(self) -> None:
@@ -202,6 +213,7 @@ class Live2DPortraitController(QObject):
         if self._is_speaking:
             self._apply_speaking_expressions()
         self._interaction.start()
+        self._mouse_tracker.start()
 
     def trigger_tap(self, x: float, y: float) -> None:
         self._interaction.handle_tap(x, y)

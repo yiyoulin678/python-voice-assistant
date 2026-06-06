@@ -87,7 +87,7 @@ def test_build_deferred_services_loads_injectable_runtime_services(
     assert services.errors == ()
 
 
-def test_build_deferred_services_creates_genie_tts_provider(
+def test_build_deferred_services_creates_gptsovits_for_legacy_genie_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.core.bootstrap as bootstrap
@@ -95,15 +95,15 @@ def test_build_deferred_services_creates_genie_tts_provider(
 
     root = _build_startup_root()
     context = bootstrap.build_initial_app_context(root)
-    genie_provider = object()
+    gpt_provider = object()
 
     monkeypatch.setattr(
         type(context.settings_service),
         "load_tts_settings",
         lambda _self, **_kwargs: GPTSoVITSTTSSettings(
             enabled=True,
-            provider="genie-tts",
-            api_url="http://127.0.0.1:9880/",
+            provider="gpt-sovits",
+            api_url="http://127.0.0.1:9880/tts",
             ref_audio_path=root / "characters" / "demo" / "portrait.png",
             ref_text_path=root / "characters" / "demo" / "card.md",
             ref_text="test",
@@ -112,14 +112,13 @@ def test_build_deferred_services_creates_genie_tts_provider(
             timeout_seconds=1,
         ),
     )
-    monkeypatch.setattr(bootstrap, "GenieTTSProvider", lambda _settings: genie_provider)
+    monkeypatch.setattr(bootstrap, "GPTSoVITSTTSProvider", lambda _settings: gpt_provider)
     monkeypatch.setattr(bootstrap.SakuraPluginManager, "load_from_config", lambda *_args: None)
     monkeypatch.setattr(bootstrap, "register_mcp_tools_from_config", lambda *_args, **_kwargs: None)
 
     services = bootstrap.build_deferred_services(root, context)
 
-    assert services.tts_provider is genie_provider
-
+    assert services.tts_provider is gpt_provider
 
 def _build_startup_root() -> Path:
     root = (

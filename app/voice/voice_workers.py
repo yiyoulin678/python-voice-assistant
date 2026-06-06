@@ -30,30 +30,6 @@ class StartRecordingWorker(QThread):
             self.finished.emit(False, f"启动录音失败: {exc}")
 
 
-class TranscribePathWorker(QThread):
-    finished = Signal(object)
-
-    def __init__(self, recording_path: str, stt_settings: STTSettings, parent=None) -> None:
-        super().__init__(parent)
-        self.recording_path = recording_path
-        self.stt_settings = stt_settings
-
-    def run(self) -> None:
-        result = VoiceTranscribeResult(success=False, recording_path=self.recording_path)
-        try:
-            result.text = speech_to_text.transcribe(
-                self.recording_path,
-                language=self.stt_settings.language,
-                model_name=self.stt_settings.model_name,
-            )
-            result.success = True
-        except speech_to_text.SpeechToTextError as exc:
-            result.error_message = str(exc)
-        except Exception as exc:  # noqa: BLE001
-            result.error_message = f"语音识别失败: {exc}"
-        self.finished.emit(result)
-
-
 class StopRecordTranscribeWorker(QThread):
     finished = Signal(object)
     status = Signal(str)

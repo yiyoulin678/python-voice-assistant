@@ -112,6 +112,11 @@ class Live2DWidget(QOpenGLWidget):
             return
         self._resume_idle_motion(force=True)
 
+    def list_parameter_ids(self) -> list[str]:
+        if not self._ready or self._model is None:
+            return []
+        return [str(param_id) for param_id in self._model.GetParamIds()]
+
     def list_expression_ids(self) -> list[str]:
         """列出可用表情 ID（含 model3 未登记、仅通过 LoadExtraExpression 加载的）。"""
         return self._discover_expression_ids()

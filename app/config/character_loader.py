@@ -32,6 +32,10 @@ class CharacterLive2D:
     idle_variation_max_seconds: float = 22.0
     blink_enabled: bool = True
     physics_enabled: bool = True
+    mouse_tracking_enabled: bool = True
+    mouse_tracking_max_angle: float = 30.0
+    mouse_tracking_max_eye_offset: float = 0.85
+    mouse_tracking_smoothing: float = 0.18
 
 
 @dataclass(frozen=True)
@@ -274,6 +278,29 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         idle_max = idle_min
     blink_enabled = _optional_bool(live2d_data.get("blink_enabled"), default=True)
     physics_enabled = _optional_bool(live2d_data.get("physics_enabled"), default=True)
+    mouse_tracking_enabled = _optional_bool(
+        live2d_data.get("mouse_tracking_enabled"),
+        default=True,
+    )
+    mouse_tracking_max_angle = _optional_positive_float(
+        live2d_data.get("mouse_tracking_max_angle"),
+        30.0,
+        "mouse_tracking_max_angle",
+    )
+    mouse_tracking_max_eye_offset = _optional_positive_float(
+        live2d_data.get("mouse_tracking_max_eye_offset"),
+        0.85,
+        "mouse_tracking_max_eye_offset",
+    )
+    mouse_tracking_smoothing = _optional_positive_float(
+        live2d_data.get("mouse_tracking_smoothing"),
+        0.18,
+        "mouse_tracking_smoothing",
+    )
+    if mouse_tracking_max_eye_offset > 1.0:
+        mouse_tracking_max_eye_offset = 1.0
+    if mouse_tracking_smoothing > 1.0:
+        mouse_tracking_smoothing = 1.0
     return CharacterLive2D(
         model_json_path=model_json,
         idle_motion_file=idle_motion or None,
@@ -287,6 +314,10 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         idle_variation_max_seconds=idle_max,
         blink_enabled=blink_enabled,
         physics_enabled=physics_enabled,
+        mouse_tracking_enabled=mouse_tracking_enabled,
+        mouse_tracking_max_angle=mouse_tracking_max_angle,
+        mouse_tracking_max_eye_offset=mouse_tracking_max_eye_offset,
+        mouse_tracking_smoothing=mouse_tracking_smoothing,
     )
 
 

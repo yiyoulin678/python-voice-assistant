@@ -10,7 +10,7 @@ servers:
     risk: low
     requires_confirmation: false
   playwright:
-    enabled: false
+    enabled: true
     transport: stdio
     command: '{node}'
     args:

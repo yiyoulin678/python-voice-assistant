@@ -80,6 +80,12 @@ def pack_ogg(io_buffer: BytesIO, data: np.ndarray, rate: int):
     return io_buffer
 
 def pack_raw(io_buffer: BytesIO, data: np.ndarray, rate: int):
+    _ = rate
+    if np.issubdtype(data.dtype, np.floating):
+        data = np.clip(data, -1.0, 1.0)
+        data = (data * 32767.0).astype(np.int16)
+    elif data.dtype != np.int16:
+        data = data.astype(np.int16)
     io_buffer.write(data.tobytes())
     return io_buffer
 

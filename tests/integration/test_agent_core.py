@@ -302,8 +302,11 @@ def test_proactive_care_screen_context_flag_controls_active_care() -> None:
         check_interval_minutes=20,
     )
 
+    assert enabled_settings.allows_proactive_topics()
     assert enabled_settings.allows_screen_context()
-    assert care_disabled_settings.allows_screen_context()
+    assert not care_disabled_settings.allows_proactive_topics()
+    assert not care_disabled_settings.allows_screen_context()
+    assert screen_disabled_settings.allows_proactive_topics()
     assert not screen_disabled_settings.allows_screen_context()
 
 

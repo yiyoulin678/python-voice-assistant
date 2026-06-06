@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QTimer
 
+from app.media.music import normalize_music_source
 from app.media.now_playing import is_music_app, read_now_playing
 from app.ui.live2d_portrait_controller import Live2DPortraitController
 
@@ -24,7 +25,7 @@ class MusicSingAlongController(QObject):
         super().__init__(parent)
         self._get_portrait = get_portrait
         self._is_blocked = is_blocked
-        self._music_source = music_source
+        self._music_source = normalize_music_source(music_source)
         self._enabled = False
         self._active = False
         self._timer = QTimer(self)
@@ -41,10 +42,7 @@ class MusicSingAlongController(QObject):
         self._stop_singing()
 
     def set_music_source(self, source: str) -> None:
-        normalized = str(source).strip().lower()
-        if normalized not in _MUSIC_APP_HINTS:
-            normalized = "netease"
-        self._music_source = normalized
+        self._music_source = normalize_music_source(source)
 
     def _tick(self) -> None:
         if not self._enabled:

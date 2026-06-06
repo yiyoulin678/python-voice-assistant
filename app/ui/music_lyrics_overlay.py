@@ -15,8 +15,15 @@ from app.media.now_playing import NowPlayingInfo, read_now_playing
 LYRICS_OVERLAY_HEIGHT = 88
 TRACK_POLL_INTERVAL_MS = 450
 LYRIC_TICK_INTERVAL_MS = 50
-SMTC_POSITION_TRUST_SECONDS = 0.35
 _IDLE_POLLS_BEFORE_HIDE = 4
+
+
+@dataclass
+class _PlaybackClock:
+    track_key: str = ""
+    started_at: float | None = None
+    paused_at: float = 0.0
+    is_playing: bool = False
 
 
 class LyricsFetchWorker(QObject):
@@ -45,18 +52,8 @@ class LyricsFetchWorker(QObject):
         self.finished.emit(lyrics)
 
 
-@dataclass
-class _PlaybackClock:
-    track_key: str = ""
-    started_at: float | None = None
-    paused_at: float = 0.0
-    is_playing: bool = False
-    last_smtc_position: float = 0.0
-    last_smtc_sync_at: float = 0.0
-
-
 class MusicLyricsOverlay(QWidget):
-    """立绘前方的透明歌词层。"""
+    """立绘前方的透明歌词层。曲目信息来自 SMTC，进度仅用本地时钟。"""
 
     def __init__(
         self,
@@ -144,11 +141,12 @@ class MusicLyricsOverlay(QWidget):
 
     def _seed_clock_from_info(self, info: NowPlayingInfo) -> None:
         self._clock.is_playing = info.is_playing
-        if info.position_seconds <= SMTC_POSITION_TRUST_SECONDS:
-            if info.is_playing:
-                self._clock.started_at = time.monotonic()
+        if info.is_playing:
+            self._clock.started_at = time.monotonic()
+            self._clock.paused_at = 0.0
             return
-        self._apply_smtc_position(info.position_seconds, playing=info.is_playing)
+        self._clock.started_at = None
+        self._clock.paused_at = 0.0
 
     def _start_lyrics_fetch(self, info: NowPlayingInfo) -> None:
         self._cleanup_fetch_thread()
@@ -185,33 +183,7 @@ class MusicLyricsOverlay(QWidget):
         self._lyrics_fetch_done = True
         self._update_lyric_line()
 
-    def _apply_smtc_position(self, position_seconds: float, *, playing: bool) -> None:
-        position_seconds = max(0.0, position_seconds)
-        now = time.monotonic()
-        self._clock.last_smtc_position = position_seconds
-        self._clock.last_smtc_sync_at = now
-        self._clock.is_playing = playing
-        if playing:
-            self._clock.started_at = now - position_seconds
-            return
-        self._clock.paused_at = position_seconds
-        self._clock.started_at = None
-
     def _sync_playback_clock(self, info: NowPlayingInfo) -> None:
-        if info.position_seconds > SMTC_POSITION_TRUST_SECONDS:
-            drift = abs(info.position_seconds - self._playback_position_seconds())
-            if (
-                info.is_playing != self._clock.is_playing
-                or drift > 1.0
-                or self._clock.last_smtc_sync_at <= 0
-            ):
-                self._apply_smtc_position(info.position_seconds, playing=info.is_playing)
-            else:
-                self._clock.last_smtc_position = info.position_seconds
-                self._clock.last_smtc_sync_at = time.monotonic()
-                self._clock.is_playing = info.is_playing
-            return
-
         if info.is_playing:
             if not self._clock.is_playing:
                 if self._clock.started_at is None:
@@ -225,12 +197,6 @@ class MusicLyricsOverlay(QWidget):
         self._clock.started_at = None
 
     def _playback_position_seconds(self) -> float:
-        if self._clock.last_smtc_sync_at > 0:
-            if self._clock.is_playing:
-                return self._clock.last_smtc_position + (
-                    time.monotonic() - self._clock.last_smtc_sync_at
-                )
-            return self._clock.last_smtc_position
         if self._clock.started_at is not None and self._clock.is_playing:
             return max(0.0, time.monotonic() - self._clock.started_at)
         return self._clock.paused_at
