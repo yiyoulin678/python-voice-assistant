@@ -25,8 +25,12 @@ def test_compute_mouse_tracking_targets_follows_cursor() -> None:
         height=300,
         max_angle=30.0,
         max_eye_offset=0.8,
+        body_factor=0.4,
     )
     assert targets.head_angle_x > 0.0
     assert targets.head_angle_y > 0.0
+    assert targets.body_angle_x > 0.0
+    assert targets.body_angle_y > 0.0
     assert targets.eye_ball_x > 0.0
     assert targets.eye_ball_y > 0.0
+    assert targets.body_angle_x == targets.head_angle_x * 0.4

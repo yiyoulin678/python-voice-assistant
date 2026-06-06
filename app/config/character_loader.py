@@ -27,7 +27,11 @@ class CharacterLive2D:
     speaking_expression: str | None = None
     speaking_overlay_expressions: tuple[str, ...] = ()
     tap_expressions: tuple[str, ...] = ()
+    tap_motions: tuple[str, ...] = ()
+    tap_motion_group: str = "TapBody"
+    tone_motions: dict[str, str] = field(default_factory=dict)
     idle_variation_expressions: tuple[str, ...] = ()
+    idle_variation_motions: tuple[str, ...] = ()
     idle_variation_min_seconds: float = 12.0
     idle_variation_max_seconds: float = 22.0
     blink_enabled: bool = True
@@ -35,6 +39,7 @@ class CharacterLive2D:
     mouse_tracking_enabled: bool = True
     mouse_tracking_max_angle: float = 30.0
     mouse_tracking_max_eye_offset: float = 0.85
+    mouse_tracking_body_factor: float = 0.35
     mouse_tracking_smoothing: float = 0.18
 
 
@@ -259,10 +264,22 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         manifest_path,
         "tap_expressions",
     )
+    tap_motions = _load_live2d_expression_list(
+        live2d_data.get("tap_motions"),
+        manifest_path,
+        "tap_motions",
+    )
+    tap_motion_group = _optional_text(live2d_data, "tap_motion_group", "TapBody") or "TapBody"
+    tone_motions = _load_live2d_tone_map(live2d_data.get("tone_motions"), manifest_path)
     idle_variations = _load_live2d_expression_list(
         live2d_data.get("idle_variation_expressions"),
         manifest_path,
         "idle_variation_expressions",
+    )
+    idle_variation_motions = _load_live2d_expression_list(
+        live2d_data.get("idle_variation_motions"),
+        manifest_path,
+        "idle_variation_motions",
     )
     idle_min = _optional_positive_float(
         live2d_data.get("idle_variation_min_seconds"),
@@ -292,6 +309,11 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         0.85,
         "mouse_tracking_max_eye_offset",
     )
+    mouse_tracking_body_factor = _optional_positive_float(
+        live2d_data.get("mouse_tracking_body_factor"),
+        0.35,
+        "mouse_tracking_body_factor",
+    )
     mouse_tracking_smoothing = _optional_positive_float(
         live2d_data.get("mouse_tracking_smoothing"),
         0.18,
@@ -299,6 +321,8 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
     )
     if mouse_tracking_max_eye_offset > 1.0:
         mouse_tracking_max_eye_offset = 1.0
+    if mouse_tracking_body_factor > 1.0:
+        mouse_tracking_body_factor = 1.0
     if mouse_tracking_smoothing > 1.0:
         mouse_tracking_smoothing = 1.0
     return CharacterLive2D(
@@ -309,7 +333,11 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         speaking_expression=speaking_expression or None,
         speaking_overlay_expressions=speaking_overlay,
         tap_expressions=tap_expressions,
+        tap_motions=tap_motions,
+        tap_motion_group=tap_motion_group,
+        tone_motions=tone_motions,
         idle_variation_expressions=idle_variations,
+        idle_variation_motions=idle_variation_motions,
         idle_variation_min_seconds=idle_min,
         idle_variation_max_seconds=idle_max,
         blink_enabled=blink_enabled,
@@ -317,6 +345,7 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         mouse_tracking_enabled=mouse_tracking_enabled,
         mouse_tracking_max_angle=mouse_tracking_max_angle,
         mouse_tracking_max_eye_offset=mouse_tracking_max_eye_offset,
+        mouse_tracking_body_factor=mouse_tracking_body_factor,
         mouse_tracking_smoothing=mouse_tracking_smoothing,
     )
 

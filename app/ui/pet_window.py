@@ -68,6 +68,8 @@ from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.debug_log import debug_log, summarize_messages
 from app.ui.history_window import HistoryWindow
 from app.platforms.napcat import NapCatBridge
+from app.platforms.napcat.log import napcat_log
+from app.ui.napcat_console_window import NapCatConsoleWindow
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
     PROACTIVE_TOPIC_HISTORY_MARKER,
@@ -1258,6 +1260,7 @@ class PetWindow(QWidget):
             on_toggle_ui_locked=self._toggle_ui_locked,
             on_show_history=self.show_history,
             on_show_settings=self.show_settings,
+            on_show_napcat_console=self.show_napcat_console,
             on_restart=self._confirm_restart_application,
         )
         if self._using_live2d:
@@ -2754,23 +2757,84 @@ class PetWindow(QWidget):
         settings = self.settings_service.load_napcat_settings()
         if not settings.enabled:
             return
+        bridge: NapCatBridge | None = None
         try:
-            self.napcat_bridge = NapCatBridge(
+            bridge = NapCatBridge(
                 settings,
                 agent_runtime=self.agent_runtime,
                 is_busy=self._is_napcat_host_busy,
                 prefer_translation=lambda: self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
                 parent=self,
             )
-            self.napcat_bridge.start()
-            print(
-                f"[NapCat] 反向 WebSocket 已启动：{settings.websocket_url_hint()} "
-                f"（请在 NapCat 网络配置里添加 WebSocket 客户端指向该地址）"
+            bridge.connection_changed.connect(self._handle_napcat_connection_changed)
+            if bridge.start():
+                self.napcat_bridge = bridge
+                for index, url in enumerate(settings.websocket_url_hint_lines()):
+                    label = "请在 NapCat 填写" if index == 0 else "同机可试"
+                    napcat_log(f"{label}：{url}")
+                return
+            error = bridge.last_error or "未知错误"
+            bridge.deleteLater()
+            napcat_log("启动失败", {"error": error})
+            QMessageBox.warning(
+                self,
+                "NapCat",
+                f"QQ 接入未启动：{error}\n\n"
+                "请确认 6199 端口未被 AstrBot/其他桌宠占用，关闭冲突程序后重试。",
             )
         except Exception as exc:  # noqa: BLE001
+            if bridge is not None:
+                bridge.deleteLater()
             self.napcat_bridge = None
-            print(f"[NapCat] 启动失败：{exc}")
+            napcat_log("启动失败", {"error": str(exc)})
             debug_log("NapCat", "桥接启动失败", {"error": str(exc)})
+
+    @Slot(int)
+    def _handle_napcat_connection_changed(self, client_count: int) -> None:
+        if client_count > 0:
+            napcat_log(f"NapCat 已连接（{client_count} 个客户端）")
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.showMessage(
+                    "NapCat",
+                    f"QQ 已连接（{client_count}）",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    4000,
+                )
+        else:
+            napcat_log("NapCat 已断开，等待重新连接…")
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.showMessage(
+                    "NapCat",
+                    "QQ 已断开，等待 NapCat 重连…",
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    4000,
+                )
+        console = getattr(self, "_napcat_console_window", None)
+        if isinstance(console, NapCatConsoleWindow):
+            console.refresh_connection_status()
+
+    def show_napcat_console(self) -> None:
+        console = getattr(self, "_napcat_console_window", None)
+        if not isinstance(console, NapCatConsoleWindow):
+            console = NapCatConsoleWindow(
+                client_count_provider=self._napcat_client_count,
+                bridge_running_provider=self._napcat_bridge_running,
+                parent=self,
+            )
+            self._napcat_console_window = console
+        console.refresh_connection_status()
+        console.show()
+        console.raise_()
+        console.activateWindow()
+
+    def _napcat_client_count(self) -> int:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return 0
+        return int(getattr(bridge, "client_count", 0) or 0)
+
+    def _napcat_bridge_running(self) -> bool:
+        return getattr(self, "napcat_bridge", None) is not None
 
     def _stop_napcat_bridge(self) -> None:
         bridge = getattr(self, "napcat_bridge", None)
@@ -3070,6 +3134,7 @@ class PetWindow(QWidget):
             reminder_settings=self.reminder_settings,
             memory_curation_settings=self.memory_curation_settings,
             napcat_settings=self.settings_service.load_napcat_settings(),
+            on_open_napcat_console=self.show_napcat_console,
             subtitle_language=self.subtitle_language,
             free_access_enabled=self.free_access_enabled,
         )

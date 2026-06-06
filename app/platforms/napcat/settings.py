@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.platforms.napcat.network import (
+    is_loopback_host,
+    is_unspecified_bind_host,
+    normalize_connect_host,
+    primary_local_ipv4,
+)
 
-DEFAULT_NAPCAT_HOST = "127.0.0.1"
+DEFAULT_NAPCAT_BIND_HOST = "0.0.0.0"
+DEFAULT_NAPCAT_HOST = DEFAULT_NAPCAT_BIND_HOST
 DEFAULT_NAPCAT_PORT = 6199
 DEFAULT_NAPCAT_PATH = "/ws"
 DEFAULT_NAPCAT_HISTORY_LIMIT = 20
@@ -14,9 +21,10 @@ class NapCatSettings:
     """NapCat / OneBot v11 反向 WebSocket 接入配置。"""
 
     enabled: bool = False
-    host: str = DEFAULT_NAPCAT_HOST
+    host: str = DEFAULT_NAPCAT_BIND_HOST
     port: int = DEFAULT_NAPCAT_PORT
     path: str = DEFAULT_NAPCAT_PATH
+    connect_host: str = ""
     token: str = ""
     allow_private: bool = True
     allow_group: bool = False
@@ -31,11 +39,23 @@ class NapCatSettings:
         if not path.startswith("/"):
             path = f"/{path}"
         history_limit = max(2, min(100, int(self.history_limit)))
+
+        raw_host = str(self.host or "").strip()
+        connect_host = str(self.connect_host or "").strip()
+        if is_loopback_host(raw_host) or is_unspecified_bind_host(raw_host):
+            bind_host = DEFAULT_NAPCAT_BIND_HOST
+        else:
+            bind_host = raw_host
+        if not connect_host:
+            connect_host = primary_local_ipv4() or "127.0.0.1"
+        connect_host = normalize_connect_host(connect_host, port=port)
+
         return NapCatSettings(
             enabled=bool(self.enabled),
-            host=str(self.host or DEFAULT_NAPCAT_HOST).strip() or DEFAULT_NAPCAT_HOST,
+            host=bind_host,
             port=port,
             path=path,
+            connect_host=connect_host,
             token=str(self.token or "").strip(),
             allow_private=bool(self.allow_private),
             allow_group=bool(self.allow_group),
@@ -44,6 +64,20 @@ class NapCatSettings:
             or "稍等一下，我还在回复上一条消息。",
         )
 
+    def bind_host(self) -> str:
+        return self.normalized().host
+
+    def resolve_connect_host(self) -> str:
+        return self.normalized().connect_host
+
     def websocket_url_hint(self) -> str:
         normalized = self.normalized()
-        return f"ws://{normalized.host}:{normalized.port}{normalized.path}"
+        return f"ws://{normalized.connect_host}:{normalized.port}{normalized.path}"
+
+    def websocket_url_hint_lines(self) -> list[str]:
+        normalized = self.normalized()
+        lines = [normalized.websocket_url_hint()]
+        loopback = f"ws://127.0.0.1:{normalized.port}{normalized.path}"
+        if loopback not in lines:
+            lines.append(loopback)
+        return lines

@@ -11,11 +11,15 @@ from app.ui.live2d_widget import Live2DWidget
 
 _HEAD_ANGLE_X = "ParamAngleX"
 _HEAD_ANGLE_Y = "ParamAngleY"
+_BODY_ANGLE_X = "ParamBodyAngleX"
+_BODY_ANGLE_Y = "ParamBodyAngleY"
 _EYE_BALL_X = "ParamEyeBallX"
 _EYE_BALL_Y = "ParamEyeBallY"
 _DEFAULT_TRACKED_PARAMS = (
     _HEAD_ANGLE_X,
     _HEAD_ANGLE_Y,
+    _BODY_ANGLE_X,
+    _BODY_ANGLE_Y,
     _EYE_BALL_X,
     _EYE_BALL_Y,
 )
@@ -25,6 +29,8 @@ _DEFAULT_TRACKED_PARAMS = (
 class MouseTrackingTargets:
     head_angle_x: float = 0.0
     head_angle_y: float = 0.0
+    body_angle_x: float = 0.0
+    body_angle_y: float = 0.0
     eye_ball_x: float = 0.0
     eye_ball_y: float = 0.0
 
@@ -37,6 +43,7 @@ def compute_mouse_tracking_targets(
     height: int,
     max_angle: float,
     max_eye_offset: float = 0.85,
+    body_factor: float = 0.35,
 ) -> MouseTrackingTargets:
     if width <= 0 or height <= 0:
         return MouseTrackingTargets()
@@ -45,9 +52,14 @@ def compute_mouse_tracking_targets(
     center_y = height / 2.0
     norm_x = _clamp((local_x - center_x) / center_x, -1.0, 1.0)
     norm_y = _clamp((local_y - center_y) / center_y, -1.0, 1.0)
+    blend = _clamp(body_factor, 0.0, 1.0)
+    head_angle_x = norm_x * max_angle
+    head_angle_y = -norm_y * max_angle
     return MouseTrackingTargets(
-        head_angle_x=norm_x * max_angle,
-        head_angle_y=-norm_y * max_angle,
+        head_angle_x=head_angle_x,
+        head_angle_y=head_angle_y,
+        body_angle_x=head_angle_x * blend,
+        body_angle_y=head_angle_y * blend,
         eye_ball_x=norm_x * max_eye_offset,
         eye_ball_y=-norm_y * max_eye_offset,
     )
@@ -119,11 +131,14 @@ class Live2DMouseTracker(QObject):
             height=self._anchor_widget.height(),
             max_angle=self._config.mouse_tracking_max_angle,
             max_eye_offset=self._config.mouse_tracking_max_eye_offset,
+            body_factor=self._config.mouse_tracking_body_factor,
         )
         smoothing = self._config.mouse_tracking_smoothing
         self._current = MouseTrackingTargets(
             head_angle_x=_lerp(self._current.head_angle_x, targets.head_angle_x, smoothing),
             head_angle_y=_lerp(self._current.head_angle_y, targets.head_angle_y, smoothing),
+            body_angle_x=_lerp(self._current.body_angle_x, targets.body_angle_x, smoothing),
+            body_angle_y=_lerp(self._current.body_angle_y, targets.body_angle_y, smoothing),
             eye_ball_x=_lerp(self._current.eye_ball_x, targets.eye_ball_x, smoothing),
             eye_ball_y=_lerp(self._current.eye_ball_y, targets.eye_ball_y, smoothing),
         )
@@ -133,6 +148,8 @@ class Live2DMouseTracker(QObject):
         mapping = {
             _HEAD_ANGLE_X: self._current.head_angle_x,
             _HEAD_ANGLE_Y: self._current.head_angle_y,
+            _BODY_ANGLE_X: self._current.body_angle_x,
+            _BODY_ANGLE_Y: self._current.body_angle_y,
             _EYE_BALL_X: self._current.eye_ball_x,
             _EYE_BALL_Y: self._current.eye_ball_y,
         }

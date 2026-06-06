@@ -18,6 +18,7 @@ def build_pet_tray_menu(
     on_toggle_ui_locked: Callable[[bool], None] | None = None,
     on_show_history: Callable[[], None],
     on_show_settings: Callable[[], None],
+    on_show_napcat_console: Callable[[], None] | None = None,
     on_restart: Callable[[], None] | None = None,
     interactions_enabled: bool = True,
 ) -> QMenu:
@@ -64,6 +65,12 @@ def build_pet_tray_menu(
     settings_action.setEnabled(interactions_enabled)
     settings_action.triggered.connect(on_show_settings)
     menu.addAction(settings_action)
+
+    if on_show_napcat_console is not None:
+        napcat_console_action = QAction("QQ 控制台", parent)
+        napcat_console_action.setEnabled(interactions_enabled)
+        napcat_console_action.triggered.connect(on_show_napcat_console)
+        menu.addAction(napcat_console_action)
 
     if on_restart is not None:
         restart_action = QAction("重启 Mutsuki", parent)

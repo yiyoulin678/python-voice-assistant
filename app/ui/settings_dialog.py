@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -105,7 +106,9 @@ from app.voice.tts import (
     GPTSoVITSTTSSettings,
     TTSConfigError,
 )
+from app.platforms.napcat.network import suggested_connect_hosts
 from app.platforms.napcat.settings import (
+    DEFAULT_NAPCAT_BIND_HOST,
     DEFAULT_NAPCAT_HOST,
     DEFAULT_NAPCAT_PATH,
     DEFAULT_NAPCAT_PORT,
@@ -203,6 +206,7 @@ class SettingsDialog(QDialog):
         reminder_settings: ReminderSettings | None = None,
         memory_curation_settings: MemoryCurationSettings | None = None,
         napcat_settings: NapCatSettings | None = None,
+        on_open_napcat_console: Callable[[], None] | None = None,
         subtitle_language: str = SUBTITLE_LANGUAGE_ZH,
         free_access_enabled: bool = False,
     ) -> None:
@@ -222,6 +226,7 @@ class SettingsDialog(QDialog):
         self.napcat_settings = (
             napcat_settings or settings_service.load_napcat_settings()
         ).normalized()
+        self._on_open_napcat_console = on_open_napcat_console
         self.initial_subtitle_language = (
             SUBTITLE_LANGUAGE_ZH
             if str(subtitle_language).strip().lower() == SUBTITLE_LANGUAGE_ZH
@@ -792,6 +797,16 @@ class SettingsDialog(QDialog):
         self.napcat_enabled_check.setChecked(normalized.enabled)
 
         self.napcat_host_edit = QLineEdit(normalized.host, tab)
+        self.napcat_host_edit.setPlaceholderText("0.0.0.0（监听本机所有网卡，同 AstrBot 反向 WS）")
+        self.napcat_connect_host_combo = QComboBox(tab)
+        self.napcat_connect_host_combo.setEditable(True)
+        for host in suggested_connect_hosts():
+            self.napcat_connect_host_combo.addItem(host)
+        connect_index = self.napcat_connect_host_combo.findText(normalized.connect_host)
+        if connect_index >= 0:
+            self.napcat_connect_host_combo.setCurrentIndex(connect_index)
+        else:
+            self.napcat_connect_host_combo.setEditText(normalized.resolve_connect_host())
         self.napcat_port_spin = QSpinBox(tab)
         self.napcat_port_spin.setRange(1, 65535)
         self.napcat_port_spin.setValue(normalized.port)
@@ -816,8 +831,8 @@ class SettingsDialog(QDialog):
         self.napcat_url_hint_label.setWordWrap(True)
 
         napcat_setup_hint = QLabel(
-            "在 NapCat 网络配置中添加 WebSocket 客户端（名称可填 Sakura），"
-            "URL 填下方地址；保存后需先启动桌宠，再启动 NapCat 连接。",
+            "桌宠相当于 AstrBot 的「反向 WebSocket 服务端」：监听填 0.0.0.0，"
+            "NapCat 客户端 URL 填下方具体 IP 地址。先启动桌宠，再启动 NapCat。",
             tab,
         )
         napcat_setup_hint.setWordWrap(True)
@@ -831,35 +846,51 @@ class SettingsDialog(QDialog):
                 widget.textChanged.connect(self._refresh_napcat_url_hint)
             else:
                 widget.valueChanged.connect(self._refresh_napcat_url_hint)
+        self.napcat_connect_host_combo.currentTextChanged.connect(self._refresh_napcat_url_hint)
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.napcat_enabled_check)
         form_layout.addRow("", napcat_setup_hint)
-        form_layout.addRow("监听地址", self.napcat_host_edit)
+        form_layout.addRow("反向 WS 监听", self.napcat_host_edit)
         form_layout.addRow("监听端口", self.napcat_port_spin)
         form_layout.addRow("WebSocket 路径", self.napcat_path_edit)
+        form_layout.addRow("NapCat 填写 IP", self.napcat_connect_host_combo)
         form_layout.addRow("NapCat 连接地址", self.napcat_url_hint_label)
         form_layout.addRow("Token", self.napcat_token_edit)
         form_layout.addRow("", self.napcat_allow_private_check)
         form_layout.addRow("", self.napcat_allow_group_check)
         form_layout.addRow("每会话历史条数", self.napcat_history_limit_spin)
         form_layout.addRow("桌宠忙碌时回复", self.napcat_busy_reply_edit)
+        if self._on_open_napcat_console is not None:
+            self.napcat_console_button = QPushButton("打开 QQ 控制台", tab)
+            self.napcat_console_button.clicked.connect(self._on_open_napcat_console)
+            form_layout.addRow("", self.napcat_console_button)
         tab.setLayout(form_layout)
         return tab
 
-    def _napcat_websocket_url_hint_text(self) -> str:
+    def _current_napcat_form_settings(self) -> NapCatSettings:
         host_edit = getattr(self, "napcat_host_edit", None)
         port_spin = getattr(self, "napcat_port_spin", None)
         path_edit = getattr(self, "napcat_path_edit", None)
+        connect_combo = getattr(self, "napcat_connect_host_combo", None)
         if host_edit is None or port_spin is None or path_edit is None:
-            return self.napcat_settings.websocket_url_hint()
+            return self.napcat_settings.normalized()
         return NapCatSettings(
-            host=host_edit.text() or DEFAULT_NAPCAT_HOST,
+            host=host_edit.text() or DEFAULT_NAPCAT_BIND_HOST,
             port=port_spin.value() or DEFAULT_NAPCAT_PORT,
             path=path_edit.text() or DEFAULT_NAPCAT_PATH,
-        ).normalized().websocket_url_hint()
+            connect_host=(
+                connect_combo.currentText().strip() if connect_combo is not None else ""
+            ),
+        ).normalized()
+
+    def _napcat_websocket_url_hint_text(self) -> str:
+        lines = self._current_napcat_form_settings().websocket_url_hint_lines()
+        if len(lines) == 1:
+            return lines[0]
+        return f"{lines[0]}\n同机调试：{lines[1]}"
 
     def _refresh_napcat_url_hint(self) -> None:
         label = getattr(self, "napcat_url_hint_label", None)
@@ -1643,9 +1674,10 @@ class SettingsDialog(QDialog):
         )
         self.result_napcat_settings = NapCatSettings(
             enabled=self.napcat_enabled_check.isChecked(),
-            host=self.napcat_host_edit.text() or DEFAULT_NAPCAT_HOST,
+            host=self.napcat_host_edit.text() or DEFAULT_NAPCAT_BIND_HOST,
             port=self.napcat_port_spin.value(),
             path=self.napcat_path_edit.text() or DEFAULT_NAPCAT_PATH,
+            connect_host=self.napcat_connect_host_combo.currentText().strip(),
             token=self.napcat_token_edit.text(),
             allow_private=self.napcat_allow_private_check.isChecked(),
             allow_group=self.napcat_allow_group_check.isChecked(),

@@ -141,6 +141,9 @@ class Live2DPortraitController(QObject):
             self.begin_speech_segment()
 
     def apply_for_segment(self, segment: ChatSegment) -> None:
+        motion_name = self._motion_for_segment(segment)
+        if motion_name:
+            self.live2d_widget.play_motion_by_name(motion_name, force=True)
         expression_id = self._expression_for_segment(segment)
         if expression_id == self._current_expression and self.live2d_widget.is_ready():
             if self._is_speaking:
@@ -200,6 +203,15 @@ class Live2DPortraitController(QObject):
         if tone_key and tone_key in self.live2d_config.tone_expressions:
             return self.live2d_config.tone_expressions[tone_key]
         return self.live2d_config.default_expression
+
+    def _motion_for_segment(self, segment: ChatSegment) -> str | None:
+        portrait_key = (segment.portrait or "").strip()
+        if portrait_key and portrait_key in self.live2d_config.tone_motions:
+            return self.live2d_config.tone_motions[portrait_key]
+        tone_key = (segment.tone or "").strip()
+        if tone_key and tone_key in self.live2d_config.tone_motions:
+            return self.live2d_config.tone_motions[tone_key]
+        return None
 
     def _scaled_stage_dimensions(self) -> tuple[int, int]:
         scale = self.portrait_scale_percent / 100

@@ -6,6 +6,7 @@ from app.platforms.napcat.onebot_v11 import (
     format_agent_reply_text,
     parse_message_event,
 )
+from app.platforms.napcat.gateway import OneBotV11ReverseGateway
 from app.platforms.napcat.settings import NapCatSettings
 
 
@@ -75,6 +76,39 @@ def test_format_agent_reply_text_prefers_translation() -> None:
     assert text == "你好"
 
 
+def test_gateway_request_path_accepts_str_and_bytes() -> None:
+    gateway = OneBotV11ReverseGateway(
+        NapCatSettings(),
+        on_message=lambda _message: None,
+    )
+
+    class StrRequest:
+        path = "/ws"
+
+    class BytesRequest:
+        path = b"/ws?access_token=abc"
+
+    assert gateway._request_path(StrRequest()) == "/ws"
+    assert gateway._request_path(BytesRequest()) == "/ws?access_token=abc"
+    assert gateway._path_allowed("/ws")
+    assert gateway._path_allowed("/")
+
+
+def test_napcat_settings_rejects_virtual_adapter_connect_host() -> None:
+    settings = NapCatSettings(
+        enabled=True,
+        port=6199,
+        connect_host="172.23.144.1",
+    ).normalized()
+    assert settings.resolve_connect_host() != "172.23.144.1"
+    assert settings.websocket_url_hint().startswith("ws://")
+
+
 def test_napcat_settings_websocket_url_hint() -> None:
-    settings = NapCatSettings(enabled=True, port=6199).normalized()
-    assert settings.websocket_url_hint() == "ws://127.0.0.1:6199/ws"
+    settings = NapCatSettings(
+        enabled=True,
+        port=6199,
+        connect_host="10.21.220.187",
+    ).normalized()
+    assert settings.websocket_url_hint() == "ws://10.21.220.187:6199/ws"
+    assert settings.bind_host() == "0.0.0.0"

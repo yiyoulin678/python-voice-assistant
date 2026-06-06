@@ -486,6 +486,7 @@ def test_settings_dialog_exposes_napcat_platform_settings() -> None:
             enabled=False,
             port=6200,
             path="/custom-ws",
+            connect_host="192.168.0.8",
             allow_group=True,
             history_limit=12,
             busy_reply_text="我在忙，等一下。",
@@ -495,7 +496,7 @@ def test_settings_dialog_exposes_napcat_platform_settings() -> None:
     assert not dialog.napcat_enabled_check.isChecked()
     assert dialog.napcat_port_spin.value() == 6200
     assert dialog.napcat_path_edit.text() == "/custom-ws"
-    assert "ws://127.0.0.1:6200/custom-ws" in dialog.napcat_url_hint_label.text()
+    assert "ws://192.168.0.8:6200/custom-ws" in dialog.napcat_url_hint_label.text()
 
     dialog.napcat_enabled_check.setChecked(True)
     dialog.napcat_port_spin.setValue(6199)
@@ -505,6 +506,7 @@ def test_settings_dialog_exposes_napcat_platform_settings() -> None:
         enabled=True,
         port=6199,
         path="/custom-ws",
+        connect_host="192.168.0.8",
         allow_group=True,
         history_limit=12,
         busy_reply_text="我在忙，等一下。",

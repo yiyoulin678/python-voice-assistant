@@ -53,7 +53,7 @@ class Live2DInteractionController(QObject):
         self._widget.set_on_tap(lambda: self._on_tap(0.0, 0.0))
         if self._config.blink_enabled:
             self._schedule_blink()
-        if self._config.idle_variation_expressions:
+        if self._config.idle_variation_expressions or self._config.idle_variation_motions:
             self._schedule_idle_variation()
 
     def handle_tap(self, x: float, y: float) -> None:
@@ -72,7 +72,9 @@ class Live2DInteractionController(QObject):
         self._idle_timer.stop()
 
     def resume_idle_variation(self) -> None:
-        if self._started and self._config.idle_variation_expressions:
+        if self._started and (
+            self._config.idle_variation_expressions or self._config.idle_variation_motions
+        ):
             self._schedule_idle_variation()
 
     def stop(self) -> None:
@@ -105,9 +107,21 @@ class Live2DInteractionController(QObject):
         self._restore_expression()
 
     def _on_tap(self, x: float, y: float) -> None:
+        motion_choices = self._config.tap_motions
+        if motion_choices:
+            motion_name = random.choice(motion_choices)
+            if self._widget.play_motion_by_name(motion_name, force=True):
+                debug_log(
+                    "Live2D",
+                    "轻点触发动作",
+                    {"motion": motion_name, "x": round(x, 1), "y": round(y, 1)},
+                )
+                self._widget.update()
+                return
+
         choices = self._config.tap_expressions
         if not choices:
-            debug_log("Live2D", "轻点：未配置 tap_expressions", {})
+            debug_log("Live2D", "轻点：未配置 tap_motions / tap_expressions", {})
             return
         expression_id = random.choice(choices)
         debug_log("Live2D", "轻点触发表情", {"expression": expression_id, "x": round(x, 1), "y": round(y, 1)})
@@ -115,7 +129,7 @@ class Live2DInteractionController(QObject):
         self._widget.update()
 
     def _schedule_idle_variation(self) -> None:
-        if not self._config.idle_variation_expressions:
+        if not self._config.idle_variation_expressions and not self._config.idle_variation_motions:
             return
         delay_ms = int(
             random.uniform(
@@ -127,16 +141,24 @@ class Live2DInteractionController(QObject):
         self._idle_timer.start(max(5000, delay_ms))
 
     def _play_idle_variation(self) -> None:
-        if (
-            self._started
-            and self._config.idle_variation_expressions
-            and not self._widget.is_holding_expression()
-        ):
-            self.play_fleeting_expression(
-                random.choice(self._config.idle_variation_expressions),
-                hold_ms=2200,
-                freeze_motion=False,
-            )
+        if self._started and not self._widget.is_holding_expression():
+            motion_choices = self._config.idle_variation_motions
+            if motion_choices:
+                motion_name = random.choice(motion_choices)
+                if self._widget.play_motion_by_name(motion_name, force=False):
+                    debug_log("Live2D", "闲置触发动作", {"motion": motion_name})
+                elif self._config.idle_variation_expressions:
+                    self.play_fleeting_expression(
+                        random.choice(self._config.idle_variation_expressions),
+                        hold_ms=2200,
+                        freeze_motion=False,
+                    )
+            elif self._config.idle_variation_expressions:
+                self.play_fleeting_expression(
+                    random.choice(self._config.idle_variation_expressions),
+                    hold_ms=2200,
+                    freeze_motion=False,
+                )
         self._schedule_idle_variation()
 
     def _schedule_blink(self) -> None:
