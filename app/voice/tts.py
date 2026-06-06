@@ -26,6 +26,13 @@ from app.config.character_loader import CharacterProfile
 from app.llm.chat_reply import DEFAULT_TONE
 from app.core.debug_log import debug_log
 from app.llm.expression_chunks import split_tts_expression_chunks
+from app.voice.gpt_sovits_stream import (
+    build_gpt_sovits_payload,
+    iter_streaming_pcm_chunks,
+    post_json_stream,
+    request_gpt_sovits_interrupt,
+)
+from app.voice.streaming_pcm_player import StreamingPCMPlayer
 from app.voice.wav_merge import merge_wav_files
 
 
@@ -185,6 +192,7 @@ class GPTSoVITSTTSSettings:
     ref_lang: str = "ja"
     text_lang: str = "ja"
     timeout_seconds: int = 60
+    streaming_enabled: bool = False
     tone_references: dict[str, list[ToneReference]] = field(default_factory=dict)
 
     @classmethod
@@ -283,6 +291,9 @@ class GPTSoVITSTTSProvider(QObject):
     _audio_ready = Signal(str, object, object)
     _prepared_audio_ready = Signal(object, str)
     _prepared_audio_failed = Signal(object, str)
+    _stream_pcm = Signal(int, bytes)
+    _stream_synthesis_done = Signal(object)
+    _stream_failed = Signal(object, str)
     _failed = Signal(str)
     _started = Signal(object)
     _finished = Signal(object)
@@ -307,12 +318,19 @@ class GPTSoVITSTTSProvider(QObject):
         self._service_checked = False
         self._server_process: subprocess.Popen[bytes] | subprocess.Popen[str] | None = None
         self._playback_warmup_requested = False
+        self._streaming_player: StreamingPCMPlayer | None = None
+        self._stream_request: _TTSRequest | None = None
+        self._stream_player_sample_rate: int | None = None
+        self._streaming_server_supported: bool | None = None
 
         self._audio_output: QAudioOutput | None = None
         self._player: QMediaPlayer | None = None
         self._audio_ready.connect(self._enqueue_audio)
         self._prepared_audio_ready.connect(self._store_prepared_audio)
         self._prepared_audio_failed.connect(self._fail_prepared_audio)
+        self._stream_pcm.connect(self._handle_stream_pcm)
+        self._stream_synthesis_done.connect(self._handle_stream_synthesis_done)
+        self._stream_failed.connect(self._fail_stream_request)
         self._failed.connect(self._log_error)
         self._started.connect(self._run_callback)
         self._finished.connect(self._run_callback)
@@ -336,6 +354,8 @@ class GPTSoVITSTTSProvider(QObject):
             "提交播放请求",
             {"text": text, "tone": tone, "expression_chunks": len(chunks)},
         )
+        if self.settings.streaming_enabled:
+            self._interrupt_streaming_playback()
         self._queue_request(
             _TTSRequest(
                 text=text,
@@ -503,47 +523,220 @@ class GPTSoVITSTTSProvider(QObject):
         thread.start()
 
     def _request_audio(self, tts_request: _TTSRequest) -> None:
+        use_streaming = (
+            self.settings.streaming_enabled
+            and self._streaming_server_supported is not False
+            and tts_request.prepared_audio is None
+            and self.settings.provider == TTS_PROVIDER_GPT_SOVITS
+        )
+        if use_streaming:
+            streamed = self._request_audio_streaming(tts_request)
+            if streamed:
+                return
+            debug_log("TTS", "流式合成不可用，回退整段合成", {"text": tts_request.text})
         try:
-            if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
-                debug_log("TTS", "请求已取消，跳过音频生成", {"text": tts_request.text})
-                return
-
-            fail = lambda message: self._fail_audio_request(tts_request, message)
-            if not self._ensure_service_available(fail):
-                return
-
-            if not self._ensure_character_weights(fail):
-                return
-
-            chunks = list(tts_request.expression_chunks) or [tts_request.text]
-            chunk_paths: list[Path] = []
-            for chunk in chunks:
-                chunk_path = self._synthesize_gpt_sovits_text_to_path(chunk, tts_request.tone, fail)
-                if chunk_path is None:
-                    for stale_path in chunk_paths:
-                        self._schedule_audio_cleanup(stale_path)
-                    return
-                chunk_paths.append(chunk_path)
-
-            final_path = self._finalize_expression_chunk_paths(chunk_paths)
-            for chunk_path in chunk_paths:
-                if chunk_path != final_path:
-                    self._schedule_audio_cleanup(chunk_path)
-
-            debug_log(
-                "TTS",
-                "GPT-SoVITS 音频生成完成",
-                {
-                    "text": tts_request.text,
-                    "chunk_count": len(chunks),
-                    "audio_path": str(final_path),
-                },
-            )
-            self._deliver_generated_audio_path(tts_request, final_path)
+            self._request_audio_batch(tts_request)
         finally:
             with self._request_lock:
                 self._request_running = False
             self._start_next_request()
+
+    def _request_audio_batch(self, tts_request: _TTSRequest) -> None:
+        if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
+            debug_log("TTS", "请求已取消，跳过音频生成", {"text": tts_request.text})
+            return
+
+        fail = lambda message: self._fail_audio_request(tts_request, message)
+        if not self._ensure_service_available(fail):
+            return
+
+        if not self._ensure_character_weights(fail):
+            return
+
+        chunks = list(tts_request.expression_chunks) or [tts_request.text]
+        chunk_paths: list[Path] = []
+        for chunk in chunks:
+            chunk_path = self._synthesize_gpt_sovits_text_to_path(chunk, tts_request.tone, fail)
+            if chunk_path is None:
+                for stale_path in chunk_paths:
+                    self._schedule_audio_cleanup(stale_path)
+                return
+            chunk_paths.append(chunk_path)
+
+        final_path = self._finalize_expression_chunk_paths(chunk_paths)
+        for chunk_path in chunk_paths:
+            if chunk_path != final_path:
+                self._schedule_audio_cleanup(chunk_path)
+
+        debug_log(
+            "TTS",
+            "GPT-SoVITS 音频生成完成",
+            {
+                "text": tts_request.text,
+                "chunk_count": len(chunks),
+                "audio_path": str(final_path),
+            },
+        )
+        self._deliver_generated_audio_path(tts_request, final_path)
+
+    def _request_audio_streaming(self, tts_request: _TTSRequest) -> bool:
+        """尝试流式合成。失败时清理状态并返回 False，由调用方回退整段合成。"""
+        if tts_request.prepared_audio is not None and tts_request.prepared_audio.cancelled:
+            debug_log("TTS", "流式请求已取消，跳过音频生成", {"text": tts_request.text})
+            return False
+
+        errors: list[str] = []
+
+        def fail(message: str) -> None:
+            errors.append(message)
+
+        if not self._ensure_service_available(fail):
+            return False
+        if not self._ensure_character_weights(fail):
+            return False
+
+        self._stream_request = tts_request
+        chunks = list(tts_request.expression_chunks) or [tts_request.text]
+        got_audio = False
+        try:
+            for chunk in chunks:
+                reference = self._select_reference(tts_request.tone)
+                payload = build_gpt_sovits_payload(
+                    text=chunk,
+                    text_lang=_resolve_request_text_lang(chunk, self.settings.text_lang),
+                    ref_audio_path=str(reference.ref_audio_path),
+                    prompt_text=reference.ref_text,
+                    prompt_lang=reference.ref_lang,
+                    streaming_mode=True,
+                )
+                debug_log(
+                    "TTS",
+                    "发送 GPT-SoVITS 流式请求",
+                    {
+                        "api_url": self.settings.api_url,
+                        "text": chunk,
+                        "tone": tts_request.tone,
+                    },
+                )
+                response = post_json_stream(
+                    self.settings.api_url,
+                    payload,
+                    timeout_seconds=self.settings.timeout_seconds,
+                    on_http_error=lambda code, body: fail(
+                        f"GPT-SoVITS HTTP {code}: {body}" if code else f"GPT-SoVITS 请求失败：{body}"
+                    ),
+                )
+                if response is None:
+                    self._reset_streaming_state()
+                    self._streaming_server_supported = False
+                    return False
+                with response:
+                    for sample_rate, pcm_bytes in iter_streaming_pcm_chunks(response):
+                        if pcm_bytes:
+                            got_audio = True
+                            self._stream_pcm.emit(sample_rate, pcm_bytes)
+
+            if errors or not got_audio:
+                debug_log(
+                    "TTS",
+                    "GPT-SoVITS 流式未产出可播放音频",
+                    {"text": tts_request.text, "errors": errors, "got_audio": got_audio},
+                )
+                self._reset_streaming_state()
+                self._streaming_server_supported = False
+                return False
+
+            self._streaming_server_supported = True
+            debug_log(
+                "TTS",
+                "GPT-SoVITS 流式音频生成完成",
+                {"text": tts_request.text, "chunk_count": len(chunks)},
+            )
+            self._stream_synthesis_done.emit(tts_request)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "TTS",
+                "GPT-SoVITS 流式合成异常",
+                {"text": tts_request.text, "error": str(exc), "errors": errors},
+            )
+            self._reset_streaming_state()
+            self._streaming_server_supported = False
+            return False
+
+    def _reset_streaming_state(self) -> None:
+        request_gpt_sovits_interrupt(
+            self.settings.api_url,
+            timeout_seconds=min(self.settings.timeout_seconds, 3),
+        )
+        if self._streaming_player is not None:
+            self._streaming_player.stop(finished=False)
+            self._streaming_player = None
+        self._stream_player_sample_rate = None
+        self._stream_request = None
+
+    def _interrupt_streaming_playback(self) -> None:
+        interrupted = self._stream_request
+        self._reset_streaming_state()
+        if interrupted is not None:
+            self.playback_ended.emit()
+            self._finished.emit(interrupted.on_finished)
+            with self._request_lock:
+                self._request_running = False
+
+    @Slot(int, bytes)
+    def _handle_stream_pcm(self, sample_rate: int, pcm_bytes: bytes) -> None:
+        if self._stream_request is None:
+            return
+        if self._streaming_player is None or self._stream_player_sample_rate != sample_rate:
+            if self._streaming_player is not None:
+                self._streaming_player.stop(finished=False)
+            self._streaming_player = StreamingPCMPlayer(self)
+            self._streaming_player.playback_started.connect(self._handle_stream_playback_started)
+            self._streaming_player.playback_finished.connect(self._handle_stream_playback_finished)
+            self._streaming_player.start(sample_rate)
+            self._stream_player_sample_rate = sample_rate
+        self._streaming_player.append_pcm(pcm_bytes)
+
+    @Slot()
+    def _handle_stream_playback_started(self) -> None:
+        request = self._stream_request
+        if request is None:
+            return
+        debug_log("TTS", "流式音频开始播放", {"text": request.text})
+        self.playback_started.emit("")
+        self._started.emit(request.on_started)
+
+    @Slot()
+    def _handle_stream_playback_finished(self) -> None:
+        request = self._stream_request
+        debug_log("TTS", "流式音频播放完成", {"text": request.text if request else ""})
+        self.playback_ended.emit()
+        if request is not None:
+            self._finished.emit(request.on_finished)
+        self._streaming_player = None
+        self._stream_player_sample_rate = None
+        self._stream_request = None
+        with self._request_lock:
+            self._request_running = False
+        self._start_next_request()
+
+    @Slot(object)
+    def _handle_stream_synthesis_done(self, tts_request: _TTSRequest) -> None:
+        if self._stream_request is not tts_request:
+            return
+        if self._streaming_player is None:
+            self._stream_failed.emit(tts_request, "GPT-SoVITS 流式播放初始化失败。")
+            return
+        self._streaming_player.mark_synthesis_done()
+
+    @Slot(object, str)
+    def _fail_stream_request(self, tts_request: _TTSRequest, message: str) -> None:
+        self._interrupt_streaming_playback()
+        self._fail_audio_request(tts_request, message)
+        with self._request_lock:
+            self._request_running = False
+        self._start_next_request()
 
     def _synthesize_gpt_sovits_text_to_path(
         self,
@@ -716,7 +909,8 @@ class GPTSoVITSTTSProvider(QObject):
             return False
         work_dir = work_dir.resolve()
         python_exe = work_dir / "runtime" / "python.exe"
-        api_script = work_dir / "api_v2.py"
+        bundled_api = Path(__file__).resolve().parent / "bundled" / "gpt_sovits_api_v2.py"
+        api_script = bundled_api if self.settings.streaming_enabled and bundled_api.is_file() else work_dir / "api_v2.py"
         if not work_dir.is_dir():
             fail_callback(f"GPT-SoVITS 工作目录不存在：{work_dir}")
             return False
@@ -745,7 +939,15 @@ class GPTSoVITSTTSProvider(QObject):
             fail_callback(f"GPT-SoVITS 服务启动失败：{exc}")
             return False
 
-        debug_log("TTS", "已启动本地 GPT-SoVITS 服务", {"work_dir": str(work_dir), "pid": self._server_process.pid})
+        debug_log(
+            "TTS",
+            "已启动本地 GPT-SoVITS 服务",
+            {
+                "work_dir": str(work_dir),
+                "api_script": str(api_script),
+                "pid": self._server_process.pid,
+            },
+        )
         return True
 
     def _ensure_character_weights(
@@ -1100,6 +1302,7 @@ class GPTSoVITSTTSProvider(QObject):
             self._log_error(f"临时音频清理失败：{exc}")
 
     def close(self) -> None:
+        self._interrupt_streaming_playback()
         self._release_player_source()
         self._stop_local_service()
 

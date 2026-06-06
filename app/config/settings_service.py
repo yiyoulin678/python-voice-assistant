@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +131,7 @@ class AppSettingsService:
         ref_lang = str(provider_data.get("ref_lang", gpt_sovits.get("ref_lang", "ja"))).strip()
         text_lang = str(provider_data.get("text_lang", gpt_sovits.get("text_lang", "ja"))).strip()
         timeout_seconds = _int_value(provider_data.get("timeout_seconds"), 60)
+        streaming_enabled = _bool_value(gpt_sovits.get("streaming_enabled"), False)
         onnx_model_dir = _optional_path(genie_tts.get("onnx_model_dir"), self.base_dir)
         if character_profile is not None:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
@@ -169,6 +170,8 @@ class AppSettingsService:
                 text_lang=text_lang,
                 timeout_seconds=timeout_seconds,
             )
+        if provider == TTS_PROVIDER_GPT_SOVITS:
+            settings = replace(settings, streaming_enabled=streaming_enabled)
         if settings.enabled and validate_enabled:
             settings.validate()
         return settings
@@ -197,6 +200,7 @@ class AppSettingsService:
                 "ref_lang": settings.ref_lang.strip(),
                 "text_lang": settings.text_lang.strip(),
                 "timeout_seconds": int(settings.timeout_seconds),
+                "streaming_enabled": bool(settings.streaming_enabled),
             }
         data["tts"] = tts_data
         save_yaml_mapping(self.api_config_path, data)
