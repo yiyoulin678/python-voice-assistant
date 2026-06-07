@@ -57,6 +57,7 @@ def _ui_controls_visible(window: QWidget) -> bool:
 
 
 def interactive_content_rect(window: QWidget) -> QRect | None:
+    from PySide6.QtCore import QRect
     from PySide6.QtWidgets import QWidget as QtWidget
 
     bounds: QRect | None = None
@@ -77,7 +78,7 @@ def interactive_content_rect(window: QWidget) -> QRect | None:
 
 
 def portrait_hit_rect(window: QWidget) -> QRect | None:
-    from PySide6.QtCore import QRect
+    from PySide6.QtCore import QPoint, QRect
 
     cached = getattr(window, "_portrait_hit_rect", None)
     if isinstance(cached, QRect) and not cached.isEmpty():
@@ -93,7 +94,7 @@ def portrait_hit_rect(window: QWidget) -> QRect | None:
     return QRect(top_left, stage.size())
 
 
-def point_in_portrait(window: QWidget, local: QPoint) -> bool:
+def point_in_portrait(window: QWidget, local: "QPoint") -> bool:
     rect = portrait_hit_rect(window)
     if rect is None:
         return False
