@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ai.stats import format_event_brief, format_event_time, load_ai_events, summarize_ai_events
+from app.platform.open_folder import open_folder_in_file_manager
 from app.rag.knowledge_base import KnowledgeBase
 
 _TABLE_MAX_HEIGHT = 150
@@ -42,13 +44,19 @@ class AiSettingsPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        hint = QLabel(
-            "知识库目录：data/knowledge/　·　指标文件：data/metrics/ai_events.jsonl",
-            self,
-        )
+        header = QWidget(self)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 12, 16, 0)
+        hint = QLabel("把说明文档放进知识库目录；对话后可在运行指标页查看统计。", header)
         hint.setWordWrap(True)
-        hint.setContentsMargins(16, 12, 16, 0)
-        outer.addWidget(hint)
+        header_layout.addWidget(hint, 1)
+        self.open_knowledge_dir_button = QPushButton("打开知识库", header)
+        self.open_knowledge_dir_button.clicked.connect(self._open_knowledge_dir)
+        self.open_metrics_dir_button = QPushButton("打开指标目录", header)
+        self.open_metrics_dir_button.clicked.connect(self._open_metrics_dir)
+        header_layout.addWidget(self.open_knowledge_dir_button)
+        header_layout.addWidget(self.open_metrics_dir_button)
+        outer.addWidget(header)
 
         self._sub_tabs = QTabWidget(self)
         self._sub_tabs.addTab(self._build_knowledge_page(), "知识库")
@@ -59,6 +67,35 @@ class AiSettingsPanel(QWidget):
         self._placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder_label.setContentsMargins(16, 8, 16, 12)
         outer.addWidget(self._placeholder_label)
+
+    def _open_knowledge_dir(self) -> None:
+        self._open_data_dir(
+            self.base_dir / "data" / "knowledge",
+            create=True,
+            title="打开知识库文件夹",
+        )
+
+    def _open_metrics_dir(self) -> None:
+        self._open_data_dir(
+            self.base_dir / "data" / "metrics",
+            create=True,
+            title="打开指标文件夹",
+        )
+
+    def _open_logs_dir(self) -> None:
+        self._open_data_dir(
+            self.base_dir / "data" / "logs",
+            create=True,
+            title="打开日志文件夹",
+        )
+
+    def _open_data_dir(self, path: Path, *, create: bool, title: str) -> None:
+        try:
+            opened_path = open_folder_in_file_manager(path, create=create)
+        except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+            QMessageBox.warning(self, title, str(exc))
+            return
+        self._placeholder_label.setText(f"已在资源管理器中打开：{opened_path}")
 
     def refresh_on_show(self) -> None:
         if not self._ready:
@@ -111,7 +148,10 @@ class AiSettingsPanel(QWidget):
         toolbar = QHBoxLayout()
         self.metrics_refresh_button = QPushButton("刷新", page)
         self.metrics_refresh_button.clicked.connect(self.refresh_metrics)
+        self.open_logs_dir_button = QPushButton("打开日志目录", page)
+        self.open_logs_dir_button.clicked.connect(self._open_logs_dir)
         toolbar.addWidget(self.metrics_refresh_button)
+        toolbar.addWidget(self.open_logs_dir_button)
         toolbar.addStretch(1)
         layout.addLayout(toolbar)
 
