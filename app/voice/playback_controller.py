@@ -44,6 +44,8 @@ class VoicePlaybackController:
         on_finished: TTSCallback,
     ) -> None:
         prepared_tts = self._take_prepared_tts_for_segment(segment)
+        if prepared_tts is not None and (prepared_tts.cancelled or prepared_tts.failed):
+            prepared_tts = None
         try:
             if prepared_tts is None and self._should_skip_segment_tts(segment):
                 self._log_tts_skipped(segment, sequence_id, "speak")
@@ -88,9 +90,16 @@ class VoicePlaybackController:
             on_started()
             on_finished()
 
+    def has_active_first_prepare_for_text(self, text: str) -> bool:
+        handle = self._prepared_first_tts
+        if handle is None or handle.cancelled or handle.failed:
+            return False
+        return handle.text.strip() == text.strip()
+
     def prepare_first_segment(self, segment: ChatSegment) -> None:
         """为本批回复的首句预生成音频；须在 discard_prepared 之后调用。"""
-        if self._prepared_first_segment is segment and self._prepared_first_tts is not None:
+        if self.has_active_first_prepare_for_text(segment.text):
+            self._prepared_first_segment = segment
             return
         self.discard_prepared()
         if self._should_skip_segment_tts(segment):
@@ -133,12 +142,12 @@ class VoicePlaybackController:
 
     def prepare_next(self, next_segment: ChatSegment | None) -> None:
         if next_segment is None:
-            self.discard_prepared()
+            self._discard_prepared_next()
             return
         if self._prepared_next_segment is next_segment and self._prepared_next_tts is not None:
             return
 
-        self.discard_prepared()
+        self._discard_prepared_next()
         if self._should_skip_segment_tts(next_segment):
             self._log_tts_skipped(next_segment, None, "prepare")
             return
@@ -181,13 +190,24 @@ class VoicePlaybackController:
             print(f"[TTS] 预生成失败，已继续字幕流程：{exc}")
             self._notify_error(f"预生成失败，已继续字幕流程：{exc}")
 
-    def discard_prepared(self) -> None:
+    def discard_prepared(self, *, preserve_first_text: str | None = None) -> None:
+        if (
+            preserve_first_text
+            and self._prepared_first_tts is not None
+            and not self._prepared_first_tts.cancelled
+            and self._prepared_first_tts.text.strip() == preserve_first_text.strip()
+        ):
+            self._discard_prepared_next()
+            return
         if self._prepared_first_tts is not None:
             self.tts_provider.discard_prepared(self._prepared_first_tts)
-        if self._prepared_next_tts is not None:
-            self.tts_provider.discard_prepared(self._prepared_next_tts)
+        self._discard_prepared_next()
         self._prepared_first_segment = None
         self._prepared_first_tts = None
+
+    def _discard_prepared_next(self) -> None:
+        if self._prepared_next_tts is not None:
+            self.tts_provider.discard_prepared(self._prepared_next_tts)
         self._prepared_next_segment = None
         self._prepared_next_tts = None
 

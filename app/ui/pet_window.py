@@ -1871,6 +1871,12 @@ class PetWindow(QWidget):
         )
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply)
+        if (
+            reply.segments
+            and reply.segments[0].text.strip()
+            and not self.subtitle_controller.is_reply_sequence_active()
+        ):
+            self.voice_playback_controller.prepare_first_segment(reply.segments[0])
 
     @Slot(object)
     def _handle_reply(self, result: AgentResult) -> None:

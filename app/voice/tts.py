@@ -1214,10 +1214,16 @@ class GPTSoVITSTTSProvider(QObject):
         handle.failed = True
         if handle.cancelled or not handle.play_requested:
             return
-        self._started.emit(handle.on_started)
-        self._finished.emit(handle.on_finished)
+        on_started = handle.on_started
+        on_finished = handle.on_finished
         handle.on_started = None
         handle.on_finished = None
+        debug_log(
+            "TTS",
+            "预生成播放失败，回退即时合成",
+            {"text": handle.text, "tone": handle.tone, "error": message},
+        )
+        self.speak(handle.text, handle.tone, on_started=on_started, on_finished=on_finished)
 
     @Slot(QMediaPlayer.MediaStatus)
     def _handle_media_status(self, status: QMediaPlayer.MediaStatus) -> None:

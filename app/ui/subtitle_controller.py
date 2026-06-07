@@ -175,7 +175,12 @@ class SubtitleController(QObject):
         self.set_speech(self.current_segment.display_text(self.subtitle_language))
 
     def reset_current_segment_progress(self) -> None:
-        self.voice_playback.discard_prepared()
+        preserve_first_text = (
+            self.pending_reply_segments[0].text
+            if self.pending_reply_segments
+            else None
+        )
+        self.voice_playback.discard_prepared(preserve_first_text=preserve_first_text)
         self.current_segment = None
         self.reply_advance_token += 1
         self.current_segment_sequence_id = None
@@ -204,7 +209,9 @@ class SubtitleController(QObject):
         )
         self.reset_current_segment_progress()
         if self.pending_reply_segments:
-            self.voice_playback.prepare_first_segment(self.pending_reply_segments[0])
+            first_segment = self.pending_reply_segments[0]
+            if not self.voice_playback.has_active_first_prepare_for_text(first_segment.text):
+                self.voice_playback.prepare_first_segment(first_segment)
         self._show_next_reply_segment(self.reply_sequence_id)
 
     def _show_next_reply_segment(self, sequence_id: int) -> None:

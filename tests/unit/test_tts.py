@@ -649,7 +649,86 @@ def test_voice_playback_controller_uses_prepared_japanese_audio() -> None:
     assert events == ["started", "finished"]
 
 
+def test_voice_playback_controller_preserves_first_prepare_on_discard() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    class TrackingTTS:
+        def __init__(self) -> None:
+            self.prepared = TTSPreparedAudio(text="最初の一段。")
+            self.discard_calls = 0
+
+        def prepare(self, *_args: object, **_kwargs: object) -> TTSPreparedAudio:
+            return self.prepared
+
+        def discard_prepared(self, *_args: object, **_kwargs: object) -> None:
+            self.discard_calls += 1
+
+    segment = ChatSegment("最初の一段。", "中性")
+    tts = TrackingTTS()
+    controller = VoicePlaybackController(tts, lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
+
+    controller.prepare_first_segment(segment)
+    controller.discard_prepared(preserve_first_text="最初の一段。")
+
+    assert tts.discard_calls == 0
+    assert controller.has_active_first_prepare_for_text("最初の一段。")
+
+
+def test_voice_playback_controller_falls_back_when_prepared_failed() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    class FallbackTTS:
+        def __init__(self) -> None:
+            self.speak_calls = 0
+
+        def speak(
+            self,
+            _text: str,
+            _tone: str | None = None,
+            on_finished=None,  # type: ignore[no-untyped-def]
+            on_started=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.speak_calls += 1
+            if on_started is not None:
+                on_started()
+            if on_finished is not None:
+                on_finished()
+
+        def speak_prepared(
+            self,
+            _handle: TTSPreparedAudio,
+            on_started=None,  # type: ignore[no-untyped-def]
+            on_finished=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            if on_started is not None:
+                on_started()
+            if on_finished is not None:
+                on_finished()
+
+        def discard_prepared(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    segment = ChatSegment("失敗後の一段。", "中性")
+    tts = FallbackTTS()
+    controller = VoicePlaybackController(tts, lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
+    failed = TTSPreparedAudio(text=segment.text, failed=True)
+    controller._prepared_first_segment = segment
+    controller._prepared_first_tts = failed
+
+    events: list[str] = []
+    controller.speak_segment(
+        segment,
+        1,
+        on_started=lambda: events.append("started"),
+        on_finished=lambda: events.append("finished"),
+    )
+
+    assert tts.speak_calls == 1
+    assert events == ["started", "finished"]
+
+
 def test_voice_playback_controller_ignores_prepare_error() -> None:
+
     from app.llm.chat_reply import ChatSegment
 
     class FailingPrepareTTS:
