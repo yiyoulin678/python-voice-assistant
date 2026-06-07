@@ -121,6 +121,10 @@ class Live2DWidget(QOpenGLWidget):
             return []
         return [str(param_id) for param_id in self._model.GetParamIds()]
 
+    @property
+    def overlay_expression_ids(self) -> frozenset[str]:
+        return frozenset(self._overlay_expressions)
+
     def list_expression_ids(self) -> list[str]:
         """列出可用表情 ID（含 model3 未登记、仅通过 LoadExtraExpression 加载的）。"""
         return self._discover_expression_ids()

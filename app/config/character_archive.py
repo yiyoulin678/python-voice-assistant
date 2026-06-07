@@ -620,6 +620,19 @@ def _live2d_settings_to_manifest(
         manifest["default_expression"] = live2d.default_expression
     if live2d.tone_expressions:
         manifest["tone_expressions"] = dict(live2d.tone_expressions)
+    if live2d.expression_presets:
+        manifest["expression_presets"] = [
+            {
+                "label": preset.label,
+                "expression": preset.expression,
+                **(
+                    {"overlays": [*preset.overlays]}
+                    if preset.overlays
+                    else {}
+                ),
+            }
+            for preset in live2d.expression_presets
+        ]
     if live2d.speaking_expression:
         manifest["speaking_expression"] = live2d.speaking_expression
     if live2d.speaking_overlay_expressions:

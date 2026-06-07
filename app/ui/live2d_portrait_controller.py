@@ -7,7 +7,11 @@ from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QLabel, QMessageBox, QWidget
 
-from app.config.character_loader import CharacterLive2D, CharacterProfile
+from app.config.character_loader import (
+    CharacterExpressionPreset,
+    CharacterLive2D,
+    CharacterProfile,
+)
 from app.llm.chat_reply import ChatSegment
 from app.ui.live2d_interaction import Live2DInteractionController
 from app.ui.live2d_lipsync import Live2DLipSyncController
@@ -234,18 +238,43 @@ class Live2DPortraitController(QObject):
     def current_expression(self) -> str | None:
         return self._current_expression
 
+    @property
+    def overlay_expressions(self) -> frozenset[str]:
+        return self.live2d_widget.overlay_expression_ids
+
+    def is_expression_preset_active(self, preset: CharacterExpressionPreset) -> bool:
+        if (self._current_expression or "").strip() != preset.expression:
+            return False
+        return self.overlay_expressions == frozenset(preset.overlays)
+
     def apply_expression(self, expression_id: str) -> bool:
-        """菜单手动切换表情；未就绪时会排队，模型加载后自动应用。"""
-        expression_id = expression_id.strip()
+        return self.apply_expression_preset(
+            CharacterExpressionPreset(label=expression_id, expression=expression_id)
+        )
+
+    def apply_expression_preset(self, preset: CharacterExpressionPreset) -> bool:
+        """菜单手动切换表情组合；未就绪时会排队，模型加载后自动应用。"""
+        expression_id = preset.expression.strip()
         if not expression_id:
             return False
-        if expression_id not in self.live2d_widget.list_expression_ids():
+        available_ids = set(self.live2d_widget.list_expression_ids())
+        if expression_id not in available_ids:
+            return False
+        overlays = tuple(
+            overlay.strip()
+            for overlay in preset.overlays
+            if overlay.strip() and overlay.strip() in available_ids
+        )
+        if len(overlays) != len(preset.overlays):
             return False
         self._interaction.cancel_scheduled_restore()
         self._interaction.cancel_idle_variation()
         self._current_expression = expression_id
         self._persistent_expression_applied = True
+        self.live2d_widget.clear_expression_overlays()
         self.live2d_widget.set_persistent_expression(expression_id)
+        for overlay_id in overlays:
+            self.live2d_widget.add_expression_overlay(overlay_id)
         self._interaction.resume_idle_variation()
         if self._is_speaking and self.live2d_widget.is_ready():
             self._apply_speaking_expressions()

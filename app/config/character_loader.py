@@ -19,11 +19,21 @@ class CharacterConfigError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class CharacterExpressionPreset:
+    """Live2D 手动选表情菜单项：基础表情 + 可选叠加层。"""
+
+    label: str
+    expression: str
+    overlays: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CharacterLive2D:
     model_json_path: Path
     idle_motion_file: str | None = None
     default_expression: str | None = None
     tone_expressions: dict[str, str] = field(default_factory=dict)
+    expression_presets: tuple[CharacterExpressionPreset, ...] = ()
     speaking_expression: str | None = None
     speaking_overlay_expressions: tuple[str, ...] = ()
     tap_expressions: tuple[str, ...] = ()
@@ -254,6 +264,10 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
     idle_motion = _optional_text(live2d_data, "idle_motion", "")
     default_expression = _optional_text(live2d_data, "default_expression", "")
     tone_expressions = _load_live2d_tone_map(live2d_data.get("tone_expressions"), manifest_path)
+    expression_presets = _load_live2d_expression_presets(
+        live2d_data.get("expression_presets"),
+        manifest_path,
+    )
     speaking_expression = _optional_text(live2d_data, "speaking_expression", "")
     speaking_overlay = _load_live2d_overlay_expressions(
         live2d_data.get("speaking_overlay_expressions"),
@@ -330,6 +344,7 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         idle_motion_file=idle_motion or None,
         default_expression=default_expression or None,
         tone_expressions=tone_expressions,
+        expression_presets=expression_presets,
         speaking_expression=speaking_expression or None,
         speaking_overlay_expressions=speaking_overlay,
         tap_expressions=tap_expressions,
@@ -400,6 +415,38 @@ def _optional_bool(value: Any, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _load_live2d_expression_presets(
+    raw_value: Any,
+    manifest_path: Path,
+) -> tuple[CharacterExpressionPreset, ...]:
+    if raw_value is None:
+        return ()
+    if not isinstance(raw_value, list):
+        raise CharacterConfigError(f"live2d.expression_presets 必须是数组：{manifest_path}")
+    presets: list[CharacterExpressionPreset] = []
+    for index, item in enumerate(raw_value):
+        if not isinstance(item, dict):
+            raise CharacterConfigError(
+                f"live2d.expression_presets[{index}] 必须是对象：{manifest_path}"
+            )
+        label = _required_text(item, "label", manifest_path).strip()
+        expression_id = _required_text(item, "expression", manifest_path).strip()
+        overlays = _load_live2d_expression_list(
+            item.get("overlays"),
+            manifest_path,
+            f"expression_presets[{index}].overlays",
+        )
+        if label and expression_id:
+            presets.append(
+                CharacterExpressionPreset(
+                    label=label,
+                    expression=expression_id,
+                    overlays=overlays,
+                )
+            )
+    return tuple(presets)
 
 
 def _load_live2d_tone_map(raw_map: Any, manifest_path: Path) -> dict[str, str]:

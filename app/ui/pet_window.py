@@ -100,6 +100,12 @@ from app.agent.screen_observation import (
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.win_click_through import apply_locked_mouse_transparency, apply_locked_window_region
 from app.live2d.runtime import ensure_live2d_init, is_live2d_available, live2d_import_error
+from app.config.character_loader import CharacterExpressionPreset
+from app.ui.live2d_expression_presets import (
+    build_manual_expression_presets,
+    extra_expression_ids,
+    preset_menu_label,
+)
 from app.ui.live2d_portrait_controller import Live2DPortraitController
 from app.ui.portrait_controller import (
     PORTRAIT_SCALE_DEFAULT_PERCENT,
@@ -1294,11 +1300,19 @@ class PetWindow(QWidget):
             expression_menu.addAction(placeholder)
         else:
             widget = controller.live2d_widget
-            expression_ids = widget.list_expression_ids()
-            current = controller.current_expression
+            live2d_config = controller.live2d_config
+            available_ids = set(widget.list_expression_ids())
+            presets = build_manual_expression_presets(live2d_config, available_ids)
             ready = widget.is_ready()
-            if not expression_ids:
+            if not available_ids:
                 placeholder = QAction("（未找到表情文件 *.exp3.json）", menu)
+                placeholder.setEnabled(False)
+                expression_menu.addAction(placeholder)
+            elif not presets:
+                placeholder = QAction(
+                    "（请在 character.json 配置 live2d.tone_expressions 或 expression_presets）",
+                    menu,
+                )
                 placeholder.setEnabled(False)
                 expression_menu.addAction(placeholder)
             else:
@@ -1307,14 +1321,38 @@ class PetWindow(QWidget):
                     status.setEnabled(False)
                     expression_menu.addAction(status)
                     expression_menu.addSeparator()
-                for expression_id in expression_ids:
-                    action = QAction(expression_id, menu)
+                for preset in presets:
+                    action = QAction(preset_menu_label(preset), menu)
                     action.setCheckable(True)
-                    action.setChecked(expression_id == current)
+                    action.setChecked(controller.is_expression_preset_active(preset))
                     action.triggered.connect(
-                        lambda _checked=False, eid=expression_id: self._select_live2d_expression(eid)
+                        lambda _checked=False, selected=preset: self._select_live2d_expression_preset(
+                            selected
+                        )
                     )
                     expression_menu.addAction(action)
+                advanced_ids = extra_expression_ids(available_ids, presets)
+                if advanced_ids:
+                    advanced_menu = QMenu("更多表情文件…", expression_menu)
+                    for expression_id in advanced_ids:
+                        advanced_action = QAction(expression_id, advanced_menu)
+                        advanced_action.setCheckable(True)
+                        advanced_action.setChecked(
+                            controller.is_expression_preset_active(
+                                CharacterExpressionPreset(
+                                    label=expression_id,
+                                    expression=expression_id,
+                                )
+                            )
+                        )
+                        advanced_action.triggered.connect(
+                            lambda _checked=False, eid=expression_id: self._select_live2d_expression(
+                                eid
+                            )
+                        )
+                        advanced_menu.addAction(advanced_action)
+                    expression_menu.addSeparator()
+                    expression_menu.addMenu(advanced_menu)
 
         if quit_action is not None:
             menu.insertSeparator(quit_action)
@@ -1323,18 +1361,31 @@ class PetWindow(QWidget):
             menu.addSeparator()
             menu.addMenu(expression_menu)
 
-    def _select_live2d_expression(self, expression_id: str) -> None:
+    def _select_live2d_expression_preset(self, preset: CharacterExpressionPreset) -> None:
         controller = self.portrait_controller
         if not isinstance(controller, Live2DPortraitController):
             return
-        if not controller.apply_expression(expression_id):
+        if not controller.apply_expression_preset(preset):
             QMessageBox.warning(
                 self,
                 "表情切换失败",
-                f"未找到表情「{expression_id}」，请检查模型目录中的 .exp3.json 文件。",
+                f"未找到表情组合「{preset.label}」，请检查 character.json 与模型目录。",
             )
             return
-        debug_log("Live2D", "菜单切换表情", {"expression": expression_id})
+        debug_log(
+            "Live2D",
+            "菜单切换表情组合",
+            {
+                "label": preset.label,
+                "expression": preset.expression,
+                "overlays": list(preset.overlays),
+            },
+        )
+
+    def _select_live2d_expression(self, expression_id: str) -> None:
+        self._select_live2d_expression_preset(
+            CharacterExpressionPreset(label=expression_id, expression=expression_id)
+        )
 
     @Slot()
     def _confirm_restart_application(self) -> None:
