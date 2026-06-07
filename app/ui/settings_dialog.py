@@ -121,6 +121,7 @@ from app.platforms.napcat.settings import (
     NapCatSettings,
 )
 from app.ui.ai_settings_panel import AiSettingsPanel
+from app.ui.settings_scroll import wrap_scrollable
 from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
 from sdk.types import ToolsTabContribution
 
@@ -282,9 +283,15 @@ class SettingsDialog(QDialog):
         self._syncing_memory_selection = False
 
         self.setWindowTitle("设置")
-        self.resize(680, 620)
+        self.setMinimumSize(660, 560)
+        self.resize(780, 720)
 
         tabs = QTabWidget(self)
+        tabs.setUsesScrollButtons(True)
+        tabs.setDocumentMode(True)
+        self._settings_tabs = tabs
+        self._ai_tab_index: int | None = None
+        self._ai_panel_loaded = False
         tabs.addTab(self._build_character_tab(character_registry, current_character), "角色")
         tabs.addTab(self._build_deskpet_tab(), "桌宠")
         tabs.addTab(self._build_api_tab(api_settings), "API")
@@ -307,7 +314,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
-        tabs.addTab(self._build_ai_tab(), "AI")
+        self._ai_tab_index = tabs.addTab(QWidget(self), "AI")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
@@ -321,6 +328,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(tabs, 1)
         layout.addWidget(buttons)
         self.setLayout(layout)
+        tabs.currentChanged.connect(self._on_settings_tab_changed)
         self._apply_dialog_theme(self.pet_ui_settings.normalized().ui_theme)
 
     def _build_character_tab(
@@ -370,7 +378,7 @@ class SettingsDialog(QDialog):
 
         self._load_selected_character_card()
         self._sync_character_archive_controls()
-        return tab
+        return wrap_scrollable(tab)
 
     def _build_deskpet_tab(self) -> QWidget:
         tab = QWidget(self)
@@ -475,7 +483,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("歌词提前量", self.lyric_sync_offset_spin)
         form_layout.addRow(self.deskpet_hint)
         tab.setLayout(form_layout)
-        return tab
+        return wrap_scrollable(tab)
 
     def _on_ui_theme_changed(self) -> None:
         if not hasattr(self, "ui_theme_combo"):
@@ -1069,7 +1077,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow(restart_button)
         form_layout.addRow(restart_hint)
         tab.setLayout(form_layout)
-        return tab
+        return wrap_scrollable(tab)
 
     @Slot()
     def _restart_application_from_settings(self) -> None:
@@ -1109,9 +1117,18 @@ class SettingsDialog(QDialog):
         self.proactive_cooldown_spin.setEnabled(controls_enabled)
         self.proactive_batch_limit_spin.setEnabled(screen_enabled)
 
-    def _build_ai_tab(self) -> QWidget:
-        self.ai_settings_panel = AiSettingsPanel(self.base_dir, self)
-        return self.ai_settings_panel
+    @Slot(int)
+    def _on_settings_tab_changed(self, index: int) -> None:
+        if self._ai_tab_index is None or index != self._ai_tab_index:
+            return
+        if not self._ai_panel_loaded:
+            panel = AiSettingsPanel(self.base_dir, self)
+            self.ai_settings_panel = panel
+            self._settings_tabs.removeTab(self._ai_tab_index)
+            self._ai_tab_index = self._settings_tabs.insertTab(self._ai_tab_index, panel, "AI")
+            self._ai_panel_loaded = True
+        if hasattr(self, "ai_settings_panel"):
+            self.ai_settings_panel.refresh_on_show()
 
     def _build_memory_tab(self, memory_store: MemoryStore) -> QWidget:
         tab = QWidget(self)
@@ -1133,6 +1150,7 @@ class SettingsDialog(QDialog):
         self.memory_table.verticalHeader().setVisible(False)
         self.memory_table.setAlternatingRowColors(True)
         self.memory_table.setWordWrap(True)
+        self.memory_table.setMaximumHeight(220)
         self.memory_table.itemClicked.connect(self._handle_memory_item_clicked)
         header = self.memory_table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -1207,7 +1225,7 @@ class SettingsDialog(QDialog):
         self._show_memory_placeholder("正在加载长期记忆...")
         self._clear_memory_editor()
         self._load_memory_entries()
-        return tab
+        return wrap_scrollable(tab)
 
     def _load_memory_entries(self) -> None:
         if self.memory_store is None or not hasattr(self, "memory_table"):
