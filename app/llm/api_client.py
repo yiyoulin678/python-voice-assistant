@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.llm.chat_reply import ChatReply, parse_chat_reply_result
+from app.llm.reply_validator import validate_chat_reply
 from app.core.debug_log import debug_log, summarize_messages
 from app.llm.prompt_templates import build_segmented_reply_instruction
 
@@ -119,12 +120,16 @@ class OpenAICompatibleClient:
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
         )
 
-        parsed = parse_chat_reply_result(content, strict_correspondence=strict_correspondence)
-        if parsed.needs_retry:
+        validated = validate_chat_reply(
+            content,
+            strict_correspondence=strict_correspondence,
+            source="api_chat",
+        )
+        if validated.needs_retry:
             debug_log(
                 "API",
                 "聊天回复需要修复",
-                {"reason": parsed.reason, "strict_correspondence": strict_correspondence},
+                {"reason": validated.reason, "strict_correspondence": strict_correspondence},
             )
             repaired_content = self.complete_raw(
                 system_prompt.strip(),
@@ -133,17 +138,18 @@ class OpenAICompatibleClient:
                     {"role": "assistant", "content": content},
                     {
                         "role": "user",
-                        "content": _build_reply_repair_message(parsed.reason, strict_correspondence),
+                        "content": _build_reply_repair_message(validated.reason, strict_correspondence),
                     },
                 ],
                 temperature=0.2,
                 response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
             )
-            parsed = parse_chat_reply_result(
+            validated = validate_chat_reply(
                 repaired_content,
                 strict_correspondence=strict_correspondence,
+                source="api_chat_repair",
             )
-        reply = parsed.reply
+        reply = validated.reply
         debug_log(
             "API",
             "聊天回复解析完成",
@@ -152,8 +158,8 @@ class OpenAICompatibleClient:
                 "tone": reply.tone,
                 "portraits": [segment.portrait for segment in reply.segments],
                 "reply": reply.text,
-                "needs_retry": parsed.needs_retry,
-                "reason": parsed.reason,
+                "needs_retry": validated.needs_retry,
+                "reason": validated.reason,
             },
         )
         return reply

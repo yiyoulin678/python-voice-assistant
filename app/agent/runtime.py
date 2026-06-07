@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Any, Callable
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.ai.metrics import AiMetricsRecorder
 from app.agent.memory import MemoryStore
+from app.rag.knowledge_base import KnowledgeBase
 from app.agent.screen_tools import (
     OBSERVE_SCREEN_TOOL_NAME,
     SCREEN_OBSERVATION_CAPABILITY,
@@ -64,6 +66,8 @@ class AgentRuntime:
         reply_portraits: list[str] | None = None,
         tools: ToolRegistry | None = None,
         memory: MemoryStore | None = None,
+        knowledge_base: KnowledgeBase | None = None,
+        metrics: AiMetricsRecorder | None = None,
     ) -> None:
         self.api_client = api_client
         self.system_prompt = system_prompt
@@ -71,6 +75,9 @@ class AgentRuntime:
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
         self.memory = memory or MemoryStore()
+        self.knowledge_base = knowledge_base
+        self.metrics = metrics
+        self._turn_messages: list[ChatMessage] = []
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
         self.strict_ja_zh_correspondence_enabled = False
@@ -178,13 +185,15 @@ class AgentRuntime:
                 "messages": summarize_messages(messages),
             },
         )
-        return self._run_tool_loop(
+        result = self._run_tool_loop(
             messages,
             allow_screen_observation=allow_screen_observation,
             turn_started_at=turn_started_at,
             vision_unsupported_reply=_build_vision_unsupported_reply(),
             progress_callback=progress_callback,
         )
+        self._record_chat_metrics(messages, result, turn_started_at)
+        return result
 
     def _run_tool_loop(
         self,
@@ -199,11 +208,12 @@ class AgentRuntime:
         progress_callback: ProgressCallback | None = None,
     ) -> AgentResult:
         """执行 OpenAI 原生 tools/tool_calls 循环。"""
+        self._turn_messages = [*messages]
         working_messages: list[ChatMessage] = [*messages]
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
-        active_groups: set[str] = {"default", "mcp", "memory"}
+        active_groups: set[str] = {"default", "mcp", "memory", "knowledge"}
         for step_index in range(MAX_AGENT_STEPS_PER_TURN):
             browser_page_mode = _should_prefer_browser_page_tools(working_messages)
             browser_page_guard_active = (
@@ -771,6 +781,7 @@ class AgentRuntime:
         visible_browser_mode: bool = False,
     ) -> str:
         memory_summary = self._memory_summary()
+        knowledge_context = self._knowledge_context()
         current_time = datetime.now().astimezone().isoformat(timespec="seconds")
         reply_protocol = build_agent_reply_protocol(
             self.reply_tones,
@@ -793,6 +804,8 @@ class AgentRuntime:
 长期记忆摘要：
 {memory_summary}
 
+{knowledge_context}
+
 当前本地时间：
 {current_time}
 
@@ -810,6 +823,7 @@ class AgentRuntime:
 - 屏幕：理解当前画面用 observe_screen（仅启用时可用）。
 - 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。
 - 提醒与记忆：add_reminder、memory_search、memory_remember、memory_forget
+- 文档知识库：knowledge_search（检索 data/knowledge/ 下的说明文档）
 
 工具要求：
 - 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。
@@ -827,6 +841,7 @@ class AgentRuntime:
 - 用户说“几分钟后/几秒后/一会儿后”等相对提醒时，add_reminder 必须使用 delay_minutes 或 delay_seconds，不要自己换算 trigger_at。
 - 只有用户给出明确日期或钟点时，add_reminder 才使用 trigger_at。
 - 需要跨会话信息、用户偏好或项目状态时，优先使用 memory_search。
+- 需要课设要求、项目说明等已入库文档时，优先使用 knowledge_search。
 - 只有用户明确要求记住，或信息明显长期有用且不包含敏感凭据时，才使用 memory_remember。
 - 只有用户明确要求忘掉信息时，才使用 memory_forget。
 """.strip()
@@ -874,6 +889,49 @@ class AgentRuntime:
             return self.memory.summary()
         except Exception as exc:
             return f"长期记忆读取失败：{exc}"
+
+    def _knowledge_context(self) -> str:
+        if self.knowledge_base is None:
+            return ""
+        query = _latest_user_text(self._turn_messages)
+        if not query:
+            return ""
+        try:
+            self.knowledge_base.reload()
+            context = self.knowledge_base.format_context(query)
+        except Exception as exc:  # noqa: BLE001
+            return f"知识库检索失败：{exc}"
+        return context
+
+    def _record_chat_metrics(
+        self,
+        messages: list[ChatMessage],
+        result: AgentResult,
+        started_at: float,
+    ) -> None:
+        if self.metrics is None:
+            return
+        user_text = _latest_user_text(messages)
+        tools_used = _extract_tool_names(result.actions)
+        tones = [segment.tone for segment in result.reply.segments if segment.tone.strip()]
+        rag_sources: list[str] = []
+        if self.knowledge_base is not None and user_text:
+            try:
+                rag_sources = [hit.source for hit in self.knowledge_base.search(user_text, limit=3)]
+            except Exception:  # noqa: BLE001
+                rag_sources = []
+        self.metrics.record(
+            "chat_completed",
+            {
+                "input_preview": user_text[:240],
+                "reply_preview": result.reply.text[:240],
+                "segment_count": len(result.reply.segments),
+                "tones": tones,
+                "tools": tools_used,
+                "rag_sources": rag_sources,
+                "latency_ms": int((time.perf_counter() - started_at) * 1000),
+            },
+        )
 
 
 def _emit_progress_from_content(
@@ -2211,3 +2269,34 @@ def _build_debug_meta(
             for result in execution_results
         ],
     }
+
+
+def _latest_user_text(messages: list[ChatMessage]) -> str:
+    for message in reversed(messages):
+        if str(message.get("role", "")).strip() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    parts.append(item["text"].strip())
+            joined = "\n".join(part for part in parts if part)
+            if joined.strip():
+                return joined.strip()
+    return ""
+
+
+def _extract_tool_names(actions: list[AgentAction]) -> list[str]:
+    names: list[str] = []
+    for action in actions:
+        if action.type != "tool_call":
+            continue
+        tool_name = action.payload.get("tool_name") or action.payload.get("name")
+        if isinstance(tool_name, str) and tool_name.strip():
+            names.append(tool_name.strip())
+    return names

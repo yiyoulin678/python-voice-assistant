@@ -12,19 +12,20 @@ from app.agent.memory import MemoryStore
 from app.agent.reminders import ReminderStore
 from app.agent.screen_tools import create_screen_observation_tool
 from app.agent.tool_registry import Tool, ToolRegistry
+from app.rag.knowledge_base import KnowledgeBase
 
 
 def create_builtin_tool_registry(
     base_dir: Path,
     memory: MemoryStore | None = None,
     reminders: ReminderStore | None = None,
+    knowledge_base: KnowledgeBase | None = None,
 ) -> ToolRegistry:
     store = TodoStore(base_dir / "data" / "tasks.json")
     notes = NotesStore(base_dir / "data" / "notes")
     memory = memory or MemoryStore(base_dir / "data" / "memory.json")
     reminders = reminders or ReminderStore(base_dir / "data" / "reminders.json")
-    registry = ToolRegistry(
-        [
+    tools: list[Tool] = [
             create_screen_observation_tool(),
             Tool(
                 name="get_current_time",
@@ -244,8 +245,28 @@ def create_builtin_tool_registry(
                 handler=lambda arguments: memory.forget_memory(_memory_forget_arguments(arguments), wait=False),
                 group="memory",
             ),
-        ]
-    )
+    ]
+    if knowledge_base is not None:
+        tools.append(
+            Tool(
+                name="knowledge_search",
+                description=(
+                    "搜索本地文档知识库（data/knowledge/ 下的 txt/md）。"
+                    "当用户询问课设要求、项目说明、角色设定文档等已入库资料时使用。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索关键词或自然语言问题。"},
+                        "limit": {"type": "integer", "description": "最多返回条数，默认 5。"},
+                    },
+                    "required": ["query"],
+                },
+                handler=lambda arguments: _knowledge_search(knowledge_base, arguments),
+                group="knowledge",
+            )
+        )
+    registry = ToolRegistry(tools)
     registry.register(
         Tool(
             name="search_tools",
@@ -289,6 +310,24 @@ def get_current_time() -> dict[str, str]:
 def _memory_forget_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     memory_id = arguments.get("memory_id") or arguments.get("id")
     return {"id": memory_id}
+
+
+def _knowledge_search(knowledge_base: KnowledgeBase, arguments: dict[str, Any]) -> dict[str, Any]:
+    query = _required_text(arguments, "query")
+    limit = arguments.get("limit")
+    parsed_limit = 5
+    if isinstance(limit, int) and limit > 0:
+        parsed_limit = min(limit, 20)
+    elif isinstance(limit, float) and limit > 0:
+        parsed_limit = min(int(limit), 20)
+    knowledge_base.reload()
+    results = knowledge_base.search(query, limit=parsed_limit)
+    return {
+        "query": query,
+        "count": len(results),
+        "sources": knowledge_base.list_sources(),
+        "results": [item.to_dict() for item in results],
+    }
 
 
 class TodoStore:
