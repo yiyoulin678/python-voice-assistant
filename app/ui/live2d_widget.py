@@ -195,29 +195,35 @@ class Live2DWidget(QOpenGLWidget):
         self.update()
 
     def show_fleeting_expression(self, expression_id: str) -> None:
-        """轻点/闲置：叠加临时表情，不锁定 idle 动作。"""
+        """轻点/闲置：切换为单一临时表情（替换，不叠多层）。"""
         if not self._ready or self._model is None:
             return
         expression_id = expression_id.strip()
         if not expression_id or expression_id not in set(self._discover_expression_ids()):
             return
         self.makeCurrent()
-        if expression_id not in self._fleeting_expression_ids:
-            self._model.AddExpression(expression_id)
-            self._fleeting_expression_ids.append(expression_id)
+        self._remove_fleeting_expression_layers()
+        self._model.SetExpression(expression_id)
+        self._fleeting_expression_ids = [expression_id]
         self.update()
 
-    def clear_fleeting_expressions(self, *, restart_motion: bool = True) -> None:
-        if not self._ready or self._model is None:
+    def _remove_fleeting_expression_layers(self) -> None:
+        if self._model is None:
             self._fleeting_expression_ids.clear()
             return
-        self.makeCurrent()
         for expression_id in list(self._fleeting_expression_ids):
             try:
                 self._model.RemoveExpression(expression_id)
             except Exception:
                 pass
         self._fleeting_expression_ids.clear()
+
+    def clear_fleeting_expressions(self, *, restart_motion: bool = True) -> None:
+        if not self._ready or self._model is None:
+            self._fleeting_expression_ids.clear()
+            return
+        self.makeCurrent()
+        self._remove_fleeting_expression_layers()
         self._held_expression_id = ""
         self._held_snapshot_applied = False
         self._expression_motion_hold_until = 0.0
@@ -427,19 +433,16 @@ class Live2DWidget(QOpenGLWidget):
         self._start_idle_motion()
 
     def _restore_visual_state_after_motion(self) -> None:
-        """点击/语气动作结束后复位参数与表情，避免局部镂空或透明。"""
+        """语气动作结束后复位形变并回到对话基准表情，避免叠层或镂空。"""
         if self._model is None:
             return
         mouth_open = self._mouth_open
         self._model.ResetParameters()
         self._model.ResetPose()
+        self._remove_fleeting_expression_layers()
         self._model.ResetExpression()
         if self._persistent_expression_id:
             self._model.SetExpression(self._persistent_expression_id)
-        known_ids = set(self._discover_expression_ids())
-        for expression_id in self._fleeting_expression_ids:
-            if expression_id in known_ids:
-                self._model.AddExpression(expression_id)
         self._restore_expression_overlays()
         self._model.SetParameterValue("ParamMouthOpenY", mouth_open)
 

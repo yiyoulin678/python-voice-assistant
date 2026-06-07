@@ -256,7 +256,6 @@ class AppSettingsService:
             music_plugin_enabled=_bool_value(ui.get("music_plugin_enabled"), True),
             music_default_source=str(ui.get("music_default_source", "netease")),
             lyric_sync_offset_seconds=float(ui.get("lyric_sync_offset_seconds", 1.2)),
-            music_sing_along_enabled=_bool_value(ui.get("music_sing_along_enabled"), True),
             ui_theme=str(ui.get("ui_theme", "")),
             desktop_pet_rules_enabled=_bool_value(ui.get("desktop_pet_rules_enabled"), False),
             strict_ja_zh_correspondence_enabled=_bool_value(
@@ -277,7 +276,6 @@ class AppSettingsService:
                 "music_plugin_enabled": bool(normalized.music_plugin_enabled),
                 "music_default_source": normalized.music_default_source,
                 "lyric_sync_offset_seconds": normalized.lyric_sync_offset_seconds,
-                "music_sing_along_enabled": bool(normalized.music_sing_along_enabled),
                 "ui_theme": normalized.ui_theme,
                 "desktop_pet_rules_enabled": bool(normalized.desktop_pet_rules_enabled),
                 "strict_ja_zh_correspondence_enabled": bool(

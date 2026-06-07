@@ -149,7 +149,6 @@ from app.ui import (
     build_pet_tray_menu,
     capture_virtual_desktop_pixmap,
 )
-from app.media.music_sing_along import MusicSingAlongController
 from app.media.now_playing import set_preferred_music_source
 from app.ui.music_lyrics_overlay import LYRICS_OVERLAY_HEIGHT, MusicLyricsOverlay
 from app.storage.chat_audio import archive_chat_audio, export_qq_voice_audio
@@ -236,7 +235,6 @@ class PetWindow(QWidget):
         self.music_plugin_enabled = pet_ui_settings.music_plugin_enabled
         self.music_default_source = pet_ui_settings.music_default_source
         self.lyric_sync_offset_seconds = pet_ui_settings.lyric_sync_offset_seconds
-        self.music_sing_along_enabled = pet_ui_settings.music_sing_along_enabled
         self.ui_theme = pet_ui_settings.ui_theme
         self.desktop_pet_rules_enabled = pet_ui_settings.desktop_pet_rules_enabled
         self.strict_ja_zh_correspondence_enabled = (
@@ -248,7 +246,6 @@ class PetWindow(QWidget):
         )
         set_preferred_music_source(pet_ui_settings.music_default_source)
         self.music_lyrics_overlay: MusicLyricsOverlay | None = None
-        self._music_sing_along_controller: MusicSingAlongController | None = None
         self.ui_locked = False
         self._portrait_hit_rect = QRect()
         screen_observation_settings = self.settings_service.load_screen_observation_settings()
@@ -552,8 +549,6 @@ class PetWindow(QWidget):
                 lyric_sync_offset_seconds=self.lyric_sync_offset_seconds,
                 music_source=self.music_default_source,
             )
-        self._ensure_music_sing_along_controller()
-
         self._apply_ui_theme(self.ui_theme)
         self._apply_fonts()
         self._load_reply_history_from_store()
@@ -3446,9 +3441,6 @@ class PetWindow(QWidget):
                     "lyric_sync_offset_seconds": (
                         dialog.result_pet_ui_settings.lyric_sync_offset_seconds
                     ),
-                    "music_sing_along_enabled": (
-                        dialog.result_pet_ui_settings.music_sing_along_enabled
-                    ),
                     "ui_theme": dialog.result_pet_ui_settings.ui_theme,
                     "desktop_pet_rules_enabled": (
                         dialog.result_pet_ui_settings.desktop_pet_rules_enabled
@@ -3837,39 +3829,12 @@ class PetWindow(QWidget):
         self._layout_stage()
         self._update_proactive_care_hint()
 
-    def _is_music_sing_along_blocked(self) -> bool:
-        if getattr(self, "startup_initializing", False):
-            return True
-        if self.worker_thread is not None:
-            return True
-        subtitle_controller = getattr(self, "subtitle_controller", None)
-        if subtitle_controller is not None and subtitle_controller.is_reply_sequence_active():
-            return True
-        return getattr(self.tts_provider, "_current_audio", None) is not None
-
-    def _ensure_music_sing_along_controller(self) -> None:
-        if not self._using_live2d or not self.music_sing_along_enabled:
-            if self._music_sing_along_controller is not None:
-                self._music_sing_along_controller.set_enabled(False)
-            return
-        if self._music_sing_along_controller is None:
-            self._music_sing_along_controller = MusicSingAlongController(
-                get_portrait=lambda: self.portrait_controller,
-                is_blocked=self._is_music_sing_along_blocked,
-                music_source=self.music_default_source,
-                parent=self,
-            )
-        else:
-            self._music_sing_along_controller.set_music_source(self.music_default_source)
-        self._music_sing_along_controller.set_enabled(True)
-
     def _apply_music_plugin_settings(self, normalized) -> None:  # noqa: ANN001 — PetUISettings
         enabled = bool(normalized.music_plugin_enabled)
         self.music_plugin_enabled = enabled
         self.music_default_source = normalized.music_default_source
         set_preferred_music_source(normalized.music_default_source)
         self.lyric_sync_offset_seconds = normalized.lyric_sync_offset_seconds
-        self.music_sing_along_enabled = normalized.music_sing_along_enabled
         if enabled:
             if self.music_lyrics_overlay is None:
                 self.music_lyrics_overlay = MusicLyricsOverlay(
@@ -3883,7 +3848,6 @@ class PetWindow(QWidget):
                 )
         elif self.music_lyrics_overlay is not None:
             self.music_lyrics_overlay.hide()
-        self._ensure_music_sing_along_controller()
         self._layout_stage()
 
     def _apply_screen_observation_settings(self, settings) -> None:  # noqa: ANN001
@@ -4029,7 +3993,6 @@ class PetWindow(QWidget):
             self._live2d_hover_ui = False
             self.input_bar.show()
             self.input_backdrop.show()
-        self._ensure_music_sing_along_controller()
         self._refresh_input_backdrop_sources()
         self._install_portrait_drag_filters()
         subtitle_controller = getattr(self, "subtitle_controller", None)

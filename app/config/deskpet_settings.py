@@ -33,7 +33,6 @@ class PetUISettings:
     music_plugin_enabled: bool = True
     music_default_source: str = "netease"
     lyric_sync_offset_seconds: float = 0.6
-    music_sing_along_enabled: bool = True
     ui_theme: str = DEFAULT_UI_THEME
     desktop_pet_rules_enabled: bool = False
     strict_ja_zh_correspondence_enabled: bool = False
@@ -58,7 +57,6 @@ class PetUISettings:
             music_plugin_enabled=bool(self.music_plugin_enabled),
             music_default_source=source,
             lyric_sync_offset_seconds=lyric_offset,
-            music_sing_along_enabled=bool(self.music_sing_along_enabled),
             ui_theme=normalize_ui_theme(self.ui_theme),
             desktop_pet_rules_enabled=bool(self.desktop_pet_rules_enabled),
             strict_ja_zh_correspondence_enabled=bool(self.strict_ja_zh_correspondence_enabled),

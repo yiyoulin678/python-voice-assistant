@@ -451,12 +451,6 @@ class SettingsDialog(QDialog):
             "歌词相对播放进度的提前量。偏慢可加大（如 2.0），偏快可减小或为负。"
         )
 
-        self.music_sing_along_enabled_check = QCheckBox(
-            "音乐播放时安安跟唱（Live2D 口型与表情，不播放语音）",
-            tab,
-        )
-        self.music_sing_along_enabled_check.setChecked(normalized_ui.music_sing_along_enabled)
-
         self.deskpet_hint = QLabel(
             "悬停 UI 仅对 Live2D 角色生效；「锁定界面」后仅立绘区可点，窗口空白处穿透。\n"
             "歌词从 LRCLIB 拉取；网易云 SMTC 无进度，靠本地计时，可用「歌词提前量」微调同步。",
@@ -477,7 +471,6 @@ class SettingsDialog(QDialog):
         form_layout.addRow("提醒检查间隔", self.reminder_interval_spin)
         form_layout.addRow("", self.music_plugin_enabled_check)
         form_layout.addRow("歌词提前量", self.lyric_sync_offset_spin)
-        form_layout.addRow("", self.music_sing_along_enabled_check)
         form_layout.addRow(self.deskpet_hint)
         tab.setLayout(form_layout)
         return tab
@@ -1719,7 +1712,6 @@ class SettingsDialog(QDialog):
             music_plugin_enabled=self.music_plugin_enabled_check.isChecked(),
             music_default_source=pet_ui.music_default_source,
             lyric_sync_offset_seconds=self.lyric_sync_offset_spin.value(),
-            music_sing_along_enabled=self.music_sing_along_enabled_check.isChecked(),
             ui_theme=str(self.ui_theme_combo.currentData() or ""),
             desktop_pet_rules_enabled=self.desktop_pet_rules_check.isChecked(),
             strict_ja_zh_correspondence_enabled=self.strict_ja_zh_correspondence_check.isChecked(),

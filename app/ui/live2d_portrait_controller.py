@@ -84,6 +84,7 @@ class Live2DPortraitController(QObject):
             self.live2d_widget,
             live2d_config,
             restore_expression=self._restore_base_expression,
+            on_tap_expression=self._apply_persistent_expression,
             parent=self,
         )
         self._mouse_tracker = Live2DMouseTracker(
@@ -279,6 +280,17 @@ class Live2DPortraitController(QObject):
         if self._is_speaking and self.live2d_widget.is_ready():
             self._apply_speaking_expressions()
         return True
+
+    def _apply_persistent_expression(self, expression_id: str) -> None:
+        expression_id = expression_id.strip()
+        if not expression_id:
+            return
+        self._current_expression = expression_id
+        self._persistent_expression_applied = True
+        self.live2d_widget.clear_fleeting_expressions(restart_motion=False)
+        self.live2d_widget.set_persistent_expression(expression_id)
+        if self._is_speaking:
+            self._apply_speaking_expressions()
 
     def _restore_base_expression(self) -> None:
         self.live2d_widget.clear_fleeting_expressions(restart_motion=not self._is_speaking)
