@@ -85,7 +85,11 @@ class AppBuilder:
         self._character_profile = self._character_registry.get(
             self._settings_service.load_current_character_id(self._character_registry)
         )
-        self._system_prompt = load_character_system_prompt(self._character_profile)
+        pet_ui_settings = self._settings_service.load_pet_ui_settings()
+        self._system_prompt = load_character_system_prompt(
+            self._character_profile,
+            append_desktop_pet_rules=pet_ui_settings.desktop_pet_rules_enabled,
+        )
         return self
 
     def with_api_client(self) -> "AppBuilder":
@@ -185,6 +189,7 @@ class AppBuilder:
             self.with_storage()
 
         # 创建 AgentRuntime
+        pet_ui_settings = self._settings_service.load_pet_ui_settings()
         agent_runtime = AgentRuntime(
             self._api_client,
             self._system_prompt,
@@ -192,6 +197,9 @@ class AppBuilder:
             reply_portraits=list(self._character_profile.portrait_map.keys()),
             tools=self._tool_registry,
             memory=self._memory_store,
+        )
+        agent_runtime.set_strict_ja_zh_correspondence_enabled(
+            pet_ui_settings.strict_ja_zh_correspondence_enabled
         )
         core = CoreServices(
             api_client=self._api_client,

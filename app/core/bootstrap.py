@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent import AgentRuntime, MemoryStore, ReminderStore, ToolRegistry, create_builtin_tool_registry
+from app.ai.metrics import AiMetricsRecorder
+from app.llm.reply_validator import configure_reply_metrics
+from app.rag.knowledge_base import KnowledgeBase
 from app.agent.mcp import MCPToolProvider, register_mcp_tools_from_config
 from app.agent.mcp.settings import MCPRuntimeSettings
 from app.agent.memory_curator import MemoryCurator, MemoryCurationState
@@ -33,9 +36,9 @@ from app.storage.visual_observation import VisualObservationStore
 from app.core.plugin_manager import MutsukiPluginManager, SakuraPluginManager
 
 
-PORTRAIT_SCALE_MIN_PERCENT = 50
-PORTRAIT_SCALE_MAX_PERCENT = 150
-PORTRAIT_SCALE_DEFAULT_PERCENT = 80
+PORTRAIT_SCALE_MIN_PERCENT = 20
+PORTRAIT_SCALE_MAX_PERCENT = 200
+PORTRAIT_SCALE_DEFAULT_PERCENT = 100
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,11 @@ def load_startup_state(base_dir: Path) -> StartupState:
     character_profile = character_registry.get(
         settings_service.load_current_character_id(character_registry)
     )
-    system_prompt = load_character_system_prompt(character_profile)
+    pet_ui_settings = settings_service.load_pet_ui_settings()
+    system_prompt = load_character_system_prompt(
+        character_profile,
+        append_desktop_pet_rules=pet_ui_settings.desktop_pet_rules_enabled,
+    )
     debug_log(
         "Startup",
         "角色配置已加载",
@@ -130,15 +137,21 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     if not os.environ.get("SAKURA_SKIP_MEM0_PRELOAD"):
         memory_store.preload(wait=False)
     reminder_store = ReminderStore(base_dir / "data" / "reminders.json")
+    knowledge_base = KnowledgeBase(base_dir)
+    knowledge_base.reload()
+    ai_metrics = AiMetricsRecorder(base_dir)
+    configure_reply_metrics(ai_metrics)
     tool_registry = create_builtin_tool_registry(
         base_dir,
         memory_store,
         reminder_store,
+        knowledge_base=knowledge_base,
     )
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
     plugin_manager = MutsukiPluginManager(base_dir=base_dir)
     mcp_settings = settings_service.load_mcp_runtime_settings()
+    pet_ui_settings = settings_service.load_pet_ui_settings()
     agent_runtime = AgentRuntime(
         api_client=api_client,
         system_prompt=system_prompt,
@@ -146,6 +159,11 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         reply_portraits=character_profile.portrait_choices,
         tools=tool_registry,
         memory=memory_store,
+        knowledge_base=knowledge_base,
+        metrics=ai_metrics,
+    )
+    agent_runtime.set_strict_ja_zh_correspondence_enabled(
+        pet_ui_settings.strict_ja_zh_correspondence_enabled
     )
     history_store = _create_history_store(base_dir, character_profile)
     visual_observation_store = _create_visual_observation_store(base_dir, character_profile)
@@ -234,11 +252,15 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
 
     _preload_whisper_if_enabled(base_dir, settings_service, errors)
 
+    knowledge_base = KnowledgeBase(base_dir)
+    knowledge_base.reload()
     tool_registry = create_builtin_tool_registry(
         base_dir,
         context.memory_store,
         context.reminder_store,
+        knowledge_base=knowledge_base,
     )
+    context.agent_runtime.knowledge_base = knowledge_base
     tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)

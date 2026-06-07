@@ -9,7 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from app.llm.chat_reply import ChatReply, parse_chat_reply
+from app.llm.chat_reply import ChatReply, parse_chat_reply_result
+from app.llm.reply_validator import validate_chat_reply
 from app.core.debug_log import debug_log, summarize_messages
 from app.llm.prompt_templates import build_segmented_reply_instruction
 
@@ -104,8 +105,14 @@ class OpenAICompatibleClient:
         messages: list[ChatMessage],
         reply_tones: list[str] | None = None,
         reply_portraits: list[str] | None = None,
+        *,
+        strict_correspondence: bool = False,
     ) -> ChatReply:
-        segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
+        segmented_reply_instruction = _build_segmented_reply_instruction(
+            reply_tones,
+            reply_portraits,
+            strict_correspondence=strict_correspondence,
+        )
         content = self.complete_raw(
             f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
             messages,
@@ -113,7 +120,36 @@ class OpenAICompatibleClient:
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
         )
 
-        reply = parse_chat_reply(content)
+        validated = validate_chat_reply(
+            content,
+            strict_correspondence=strict_correspondence,
+            source="api_chat",
+        )
+        if validated.needs_retry:
+            debug_log(
+                "API",
+                "聊天回复需要修复",
+                {"reason": validated.reason, "strict_correspondence": strict_correspondence},
+            )
+            repaired_content = self.complete_raw(
+                system_prompt.strip(),
+                [
+                    *messages,
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": _build_reply_repair_message(validated.reason, strict_correspondence),
+                    },
+                ],
+                temperature=0.2,
+                response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
+            )
+            validated = validate_chat_reply(
+                repaired_content,
+                strict_correspondence=strict_correspondence,
+                source="api_chat_repair",
+            )
+        reply = validated.reply
         debug_log(
             "API",
             "聊天回复解析完成",
@@ -122,6 +158,8 @@ class OpenAICompatibleClient:
                 "tone": reply.tone,
                 "portraits": [segment.portrait for segment in reply.segments],
                 "reply": reply.text,
+                "needs_retry": validated.needs_retry,
+                "reason": validated.reason,
             },
         )
         return reply
@@ -390,8 +428,32 @@ class OpenAICompatibleClient:
 def _build_segmented_reply_instruction(
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None = None,
+    *,
+    strict_correspondence: bool = False,
 ) -> str:
-    return build_segmented_reply_instruction(reply_tones, reply_portraits)
+    return build_segmented_reply_instruction(
+        reply_tones,
+        reply_portraits,
+        strict_correspondence=strict_correspondence,
+    )
+
+
+def _build_reply_repair_message(reason: str, strict_correspondence: bool) -> str:
+    base = (
+        "上一条 assistant 输出不是合格的 Mutsuki 回复 JSON。"
+        "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
+        '格式必须是 {"segments":[{"ja":"自然日语","zh":"中文译文","tone":"中性","portrait":"站立待机"}]}。'
+        "ja 字段只能写自然日语，不能包含中文。"
+    )
+    if reason == "correspondence_issue" or strict_correspondence:
+        return (
+            f"{base}"
+            "当前启用了完全对应模式：ja 与 zh 必须语气、句意完全对应，"
+            "禁止概括缩写或只写主干；语气词、因果转折和补充说明都不能只在一边出现。"
+        )
+    if reason == "language_issue":
+        return f"{base}请确保 ja 字段只写自然日语。"
+    return base
 
 
 def _build_chat_completion_payload(

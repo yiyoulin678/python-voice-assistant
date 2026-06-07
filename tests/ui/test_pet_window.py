@@ -64,13 +64,12 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     QWidget = qtwidgets.QWidget
     app = QApplication.instance() or QApplication([])
     host = QWidget()
-    host.subtitle_language = SUBTITLE_LANGUAGE_ZH
-    host.free_access_enabled = True
-    host._toggle_chinese_subtitles = lambda _checked: None
-    host._toggle_free_access = lambda _checked: None
+    host.ui_locked = False
+    host._using_live2d = False
     host.show_history = lambda: None
     host.show_settings = lambda: None
-
+    host._toggle_ui_locked = lambda _checked: None
+    host._confirm_restart_application = lambda: None
     menu = PetWindow._build_menu(host)  # type: ignore[arg-type]
     actions = [action for action in menu.actions() if not action.isSeparator()]
     texts = [action.text() for action in actions]
@@ -79,10 +78,10 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     assert texts[0] == "隐藏至托盘"
     assert "启用模型视觉" not in texts
     assert "允许自主看屏幕" not in texts
-    assert "自由访问权限" not in texts
-    assert "显示中文字幕" in checkable_texts
-    assert "完整访问权限" in checkable_texts
-    assert len(checkable_texts) == 2
+    assert "显示中文字幕" not in texts
+    assert "完整访问权限" not in texts
+    assert "QQ 控制台" not in texts
+    assert checkable_texts == ["锁定界面（仅立绘可点，其余穿透）"]
 
     menu.deleteLater()
     host.deleteLater()
@@ -202,9 +201,9 @@ def test_portrait_controller_scales_pixmap_by_configured_percent() -> None:
     )
 
     expected_sizes = {
-        50: (220, 225),
-        100: (440, 450),
-        150: (660, 675),
+        50: (360, 380),
+        100: (720, 760),
+        150: (1080, 1140),
     }
     for percent, expected_size in expected_sizes.items():
         controller.set_portrait_scale_percent(percent)
@@ -230,10 +229,11 @@ def test_pet_window_loads_normalized_portrait_scale_percent() -> None:
             assert section == "ui"
             return self.values
 
-    assert MinimalWindow({})._load_portrait_scale_percent() == 80
-    assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 80
-    assert MinimalWindow({"portrait_scale_percent": 20})._load_portrait_scale_percent() == 50
-    assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 150
+    assert MinimalWindow({})._load_portrait_scale_percent() == 100
+    assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 100
+    assert MinimalWindow({"portrait_scale_percent": 10})._load_portrait_scale_percent() == 20
+    assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 180
+    assert MinimalWindow({"portrait_scale_percent": 600})._load_portrait_scale_percent() == 200
 
 
 def test_pet_window_loads_normalized_subtitle_display_speed() -> None:
@@ -308,7 +308,7 @@ def test_pet_window_locks_controls_during_startup_initialization(monkeypatch) ->
     assert window.startup_initializing
     assert window.speech_label.text() == STARTUP_INITIALIZING_TEXT
     assert not window.input_edit.isEnabled()
-    assert not window.send_button.isEnabled()
+    assert window.input_edit.placeholderText() == STARTUP_INITIALIZING_TEXT
     assert not window.screenshot_button.isEnabled()
 
     menu = window._build_menu()
@@ -366,7 +366,6 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> 
 
     assert not window.startup_initializing
     assert window.input_edit.isEnabled()
-    assert window.send_button.isEnabled()
     assert window.screenshot_button.isEnabled()
     assert window.subtitle_controller.speech_text == window.character_profile.initial_message
     assert not window.tts_error_label.isHidden()
@@ -461,6 +460,62 @@ def test_settings_dialog_exposes_windows_mcp_restart_setting() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_exposes_napcat_platform_settings() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.platforms.napcat.settings import NapCatSettings
+    from app.ui.settings_dialog import SettingsDialog
+
+    QApplication = qtwidgets.QApplication
+    app = QApplication.instance() or QApplication([])
+    root = _ui_runtime_root("napcat_platform_dialog")
+    dialog = SettingsDialog(
+        api_settings=ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            model="test-model",
+        ),
+        tts_settings=_minimal_tts_settings(),
+        base_dir=root,
+        **_settings_dialog_character_kwargs(root),
+        napcat_settings=NapCatSettings(
+            enabled=False,
+            port=6200,
+            path="/custom-ws",
+            connect_host="192.168.0.8",
+            allow_group=True,
+            history_limit=12,
+            busy_reply_text="我在忙，等一下。",
+            reply_mode="text_only",
+        ),
+    )
+
+    assert not dialog.napcat_enabled_check.isChecked()
+    assert dialog.napcat_port_spin.value() == 6200
+    assert dialog.napcat_path_edit.text() == "/custom-ws"
+    assert "ws://192.168.0.8:6200/custom-ws" in dialog.napcat_url_hint_label.text()
+
+    dialog.napcat_enabled_check.setChecked(True)
+    dialog.napcat_port_spin.setValue(6199)
+    dialog.accept()
+
+    assert dialog.result_napcat_settings == NapCatSettings(
+        enabled=True,
+        port=6199,
+        path="/custom-ws",
+        connect_host="192.168.0.8",
+        allow_group=True,
+        history_limit=12,
+        busy_reply_text="我在忙，等一下。",
+        reply_mode="text_only",
+    ).normalized()
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_dialog_exposes_tts_bundle_controls() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
@@ -540,11 +595,12 @@ def test_settings_dialog_download_success_fills_tts_work_dir(monkeypatch) -> Non
 
     assert dialog.result_tts_settings is not None
     assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    assert dialog.result_tts_settings.streaming_enabled is True
     dialog.deleteLater()
     app.processEvents()
 
 
-def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_settings_dialog_download_legacy_genie_provider_is_forced_to_gptsovits(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     qtwidgets = pytest.importorskip("PySide6.QtWidgets")
     if not hasattr(qtwidgets, "QApplication"):
@@ -558,7 +614,7 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
 
     class DialogStub:
         def __init__(self, *_args, **_kwargs) -> None:
-            self.downloaded_work_dir = root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
+            self.downloaded_work_dir = root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
             self.downloaded_provider = "genie-tts"
 
         def exec(self):  # type: ignore[no-untyped-def]
@@ -584,16 +640,17 @@ def test_settings_dialog_download_success_fills_genie_provider(monkeypatch) -> N
     dialog._download_gpt_sovits_bundle()
 
     assert dialog.tts_enabled_check.isChecked()
-    assert dialog.tts_provider_combo.currentData() == "genie-tts"
-    assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9881/"
-    assert dialog.tts_work_dir_edit.text().endswith("genie_tts_server")
+    assert dialog.tts_provider_combo.currentData() == "gpt-sovits"
+    assert dialog.tts_api_url_edit.text() == "http://127.0.0.1:9880/tts"
+    assert dialog.tts_work_dir_edit.text().endswith("gpt_sovits_v2pro")
 
     dialog.accept()
 
     assert dialog.result_tts_settings is not None
-    assert dialog.result_tts_settings.provider == "genie-tts"
-    assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
-    assert dialog.result_tts_settings.onnx_model_dir == root / "data" / "tts_bundles" / "onnx" / "sakura"
+    assert dialog.result_tts_settings.provider == "gpt-sovits"
+    assert dialog.result_tts_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    assert dialog.result_tts_settings.onnx_model_dir is None
+    assert dialog.result_tts_settings.streaming_enabled is True
     dialog.deleteLater()
     app.processEvents()
 
@@ -2241,6 +2298,8 @@ class _DummyEditableInput:
     def __init__(self, text: str) -> None:
         self._text = text
         self.cleared = False
+        self.enabled = True
+        self.placeholder = ""
 
     def text(self) -> str:
         return self._text
@@ -2251,6 +2310,9 @@ class _DummyEditableInput:
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+    def setPlaceholderText(self, text: str) -> None:
+        self.placeholder = text
 
 
 class _DummyTimer:
@@ -2387,12 +2449,14 @@ def test_set_busy_disables_manual_screenshot_button() -> None:
 
     window = MinimalBusyWindow()
     window.stt_settings = STTSettings()
+    window._voice_rec_starting = False
+    window._voice_transcribe_thread = None
     window.input_edit = _DummyEditableInput("")
     window.screenshot_button = _DummyButton()
-    window.send_button = _DummyButton()
     window.confirm_action_button = _DummyButton()
     window.cancel_action_button = _DummyButton()
     window._log_interaction_stage = lambda *_args, **_kwargs: None
+    window._update_proactive_care_hint = lambda: None
 
     window._set_busy(True)
     assert not window.screenshot_button.enabled

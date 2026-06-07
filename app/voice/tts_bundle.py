@@ -52,18 +52,6 @@ class GPUInfo:
     vram_gb: float
 
 
-GENIE_TTS = TTSBundleEntry(
-    key="genie_tts_server",
-    label="Genie TTS CPU 整合包",
-    filename="Genie-TTS Server.7z",
-    download_url=(
-        "https://www.modelscope.cn/models/twillzxy/genie-tts-server/"
-        "resolve/master/Genie-TTS%20Server.7z"
-    ),
-    size=1041915345,
-    sha256="8f06077b6102aa29f1c9473926db9a74890d627f077393aa8ebb928b52f15de1",
-    provider="genie-tts",
-)
 GPT_SOVITS_STANDARD = TTSBundleEntry(
     key="gpt_sovits_v2pro",
     label="GPT-SoVITS v2pro 通用整合包",
@@ -87,7 +75,7 @@ GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
     sha256="97b4edcd451c42357db7e26e6c1c877ca5d85144fe97beaff6d7005d35bee008",
 )
 GPT_SOVITS_BUNDLES = (GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50)
-TTS_BUNDLES = (GENIE_TTS, GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50)
+TTS_BUNDLES = GPT_SOVITS_BUNDLES
 MIN_GPT_SOVITS_VRAM_GB = 6.0
 _GPT_SOVITS_VRAM_TOLERANCE_GB = 0.25
 
@@ -139,7 +127,7 @@ def list_nvidia_gpus() -> list[GPUInfo]:
 
 def format_gpu_summary(gpus: list[GPUInfo]) -> str:
     if not gpus:
-        return "未检测到 NVIDIA GPU，将推荐 Genie TTS CPU 整合包。"
+        return "未检测到 NVIDIA GPU，将推荐 GPT-SoVITS 通用整合包。"
     return "\n".join(f"#{i} NVIDIA | {gpu.name} | {gpu.vram_gb} GB" for i, gpu in enumerate(gpus, start=1))
 
 
@@ -163,12 +151,7 @@ def recommend_gpt_sovits_bundle(gpus: list[GPUInfo] | None = None) -> TTSBundleE
 
 def recommend_tts_bundle(gpus: list[GPUInfo] | None = None) -> TTSBundleEntry:
     gpus = list_nvidia_gpus() if gpus is None else gpus
-    capable_nvidia = [gpu for gpu in gpus if _has_gpt_sovits_vram(gpu)]
-    if not capable_nvidia:
-        return GENIE_TTS
-    if any(_is_rtx_50_series(gpu.name) for gpu in capable_nvidia):
-        return GPT_SOVITS_NVIDIA50
-    return GPT_SOVITS_STANDARD
+    return recommend_gpt_sovits_bundle(gpus)
 
 
 def download_and_extract_bundle(

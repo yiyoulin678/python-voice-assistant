@@ -33,6 +33,8 @@ BROWSER_DOM_TOOL_NAMES = {
     *PLAYWRIGHT_BROWSER_TOOL_NAMES,
 }
 WEB_BACKGROUND_TOOL_NAMES = {
+    "web_search",
+    "fetch_url",
     "web__web_search",
     "web__fetch_url",
 }

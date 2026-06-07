@@ -88,7 +88,11 @@ def parse_chat_reply(content: str) -> ChatReply:
     return parse_chat_reply_result(content).reply
 
 
-def parse_chat_reply_result(content: str) -> ChatReplyParseResult:
+def parse_chat_reply_result(
+    content: str,
+    *,
+    strict_correspondence: bool = False,
+) -> ChatReplyParseResult:
     """解析模型返回并附带诊断，供 AgentRuntime 决定是否重试。"""
     content = content.strip()
     if not content:
@@ -108,13 +112,14 @@ def parse_chat_reply_result(content: str) -> ChatReplyParseResult:
     if isinstance(data, dict):
         segments, has_language_issue = _parse_segments(data)
         if segments:
-            return ChatReplyParseResult(
+            result = ChatReplyParseResult(
                 ChatReply(segments),
                 ok=not has_language_issue,
                 needs_retry=has_language_issue,
                 repaired=repaired,
                 reason="language_issue" if has_language_issue else "",
             )
+            return _apply_strict_correspondence_check(result, strict_correspondence)
 
     return ChatReplyParseResult(
         _build_safe_parse_failure_reply(),
@@ -155,6 +160,25 @@ def _parse_segment(item: Any) -> tuple[ChatSegment | None, bool]:
         return None, False
     translation = _clean_first_text(item, "zh", "chinese", "translation")
     return _build_segment(text, item.get("tone"), translation, item.get("portrait"))
+
+
+def _apply_strict_correspondence_check(
+    result: ChatReplyParseResult,
+    strict_correspondence: bool,
+) -> ChatReplyParseResult:
+    if not strict_correspondence or result.needs_retry or not result.ok:
+        return result
+    from app.llm.ja_zh_correspondence import segments_have_correspondence_issue
+
+    if not segments_have_correspondence_issue(result.reply.segments):
+        return result
+    return ChatReplyParseResult(
+        result.reply,
+        ok=False,
+        needs_retry=True,
+        repaired=result.repaired,
+        reason="correspondence_issue",
+    )
 
 
 def _build_segment(text: str, tone: Any, translation: str, portrait: Any) -> tuple[ChatSegment, bool]:

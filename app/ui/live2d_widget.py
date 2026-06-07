@@ -12,6 +12,8 @@ from PySide6.QtWidgets import QWidget
 
 from app.config.character_loader import CharacterLive2D
 from app.live2d.runtime import get_live2d_module
+from app.ui.portrait_controller import PORTRAIT_SCALE_MAX_PERCENT
+from app.ui.live2d_motions import Live2DMotionEntry, load_motion_catalog, resolve_motion_file
 
 
 class Live2DWidget(QOpenGLWidget):
@@ -43,8 +45,17 @@ class Live2DWidget(QOpenGLWidget):
         self._expression_motion_hold_until = 0.0
         self._held_expression_id = ""
         self._held_snapshot_applied = False
+        self._expression_resume_after_hold = ""
+        self._persistent_expression_id: str | None = None
+        self._fleeting_expression_ids: list[str] = []
         self._idle_motion_started = False
-        self._physics_enabled = False
+        self._motion_needs_restart = True
+        self._motion_was_stopped = False
+        self._last_idle_motion_start = 0.0
+        self._motion_catalog: dict[str, Live2DMotionEntry] = {}
+        self._loaded_motion_keys: set[tuple[str, str]] = set()
+        self._transient_motion_group: str | None = None
+        self._physics_enabled = live2d_config.physics_enabled
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
@@ -90,7 +101,8 @@ class Live2DWidget(QOpenGLWidget):
                 return
 
     def set_display_scale(self, scale: float) -> None:
-        self._scale = max(0.5, min(1.5, scale))
+        max_scale = PORTRAIT_SCALE_MAX_PERCENT / 100
+        self._scale = max(0.2, min(max_scale, scale))
         if self._model is not None:
             self._model.SetScale(self._scale)
 
@@ -100,9 +112,49 @@ class Live2DWidget(QOpenGLWidget):
     def is_holding_expression(self) -> bool:
         return bool(self._held_expression_id)
 
+    def resume_idle_motion(self) -> None:
+        """StopAllMotions 或定格表情结束后，重新播放闲置动作。"""
+        if not self._ready or self._model is None or self._held_expression_id:
+            return
+        self._resume_idle_motion(force=True)
+
+    def list_parameter_ids(self) -> list[str]:
+        if not self._ready or self._model is None:
+            return []
+        return [str(param_id) for param_id in self._model.GetParamIds()]
+
+    @property
+    def overlay_expression_ids(self) -> frozenset[str]:
+        return frozenset(self._overlay_expressions)
+
     def list_expression_ids(self) -> list[str]:
         """列出可用表情 ID（含 model3 未登记、仅通过 LoadExtraExpression 加载的）。"""
         return self._discover_expression_ids()
+
+    def list_motion_names(self) -> list[str]:
+        return sorted(self._motion_catalog)
+
+    def play_motion_by_name(self, motion_name: str, *, force: bool = False) -> bool:
+        """按 model3.json 中的动作名播放身体动作（参考 Alife DeskPet motion 指令）。"""
+        if not self._ready or self._model is None or self._held_expression_id:
+            return False
+        entry = self._motion_catalog.get(motion_name.strip())
+        if entry is None:
+            return False
+        if not self._ensure_motion_loaded(entry):
+            return False
+        live2d = get_live2d_module()
+        priority = live2d.MotionPriority.NORMAL
+        if force:
+            priority = getattr(live2d.MotionPriority, "FORCE", priority)
+        live2d_idle_group = getattr(live2d.MotionGroup, "IDLE", "Idle")
+        if entry.group != live2d_idle_group:
+            self._transient_motion_group = entry.group
+        self._model.StartMotion(entry.group, entry.index, priority)
+        self._motion_was_stopped = False
+        self._motion_needs_restart = False
+        self._last_idle_motion_start = time.monotonic()
+        return True
 
     def set_expression(
         self,
@@ -110,12 +162,82 @@ class Live2DWidget(QOpenGLWidget):
         *,
         hold_motion: bool = False,
     ) -> None:
+        if hold_motion:
+            if not self._ready or self._model is None:
+                self._pending_expression = expression_id
+                return
+            self.makeCurrent()
+            self._apply_expression(expression_id, hold_motion=True)
+            self.update()
+            return
+        self.set_persistent_expression(expression_id)
+
+    def set_persistent_expression(self, expression_id: str | None) -> None:
+        """对话/菜单：固定表情。未设置时 idle 动作可自由带动头部。"""
         if not self._ready or self._model is None:
             self._pending_expression = expression_id
             return
         self.makeCurrent()
-        self._apply_expression(expression_id, hold_motion=hold_motion)
+        self.clear_fleeting_expressions(restart_motion=False)
+        expression_id = (expression_id or "").strip()
+        if not expression_id or expression_id not in set(self._discover_expression_ids()):
+            self._persistent_expression_id = None
+            if self._model is not None:
+                self._model.ResetExpression()
+            self._resume_idle_motion(force=True)
+            self.update()
+            return
+        self._persistent_expression_id = expression_id
+        self._model.ResetExpression()
+        self._model.SetExpression(expression_id)
+        self._restore_expression_overlays()
+        self._resume_idle_motion(force=True)
         self.update()
+
+    def show_fleeting_expression(self, expression_id: str) -> None:
+        """轻点/闲置：切换为单一临时表情（替换，不叠多层）。"""
+        if not self._ready or self._model is None:
+            return
+        expression_id = expression_id.strip()
+        if not expression_id or expression_id not in set(self._discover_expression_ids()):
+            return
+        self.makeCurrent()
+        self._remove_fleeting_expression_layers()
+        self._model.SetExpression(expression_id)
+        self._fleeting_expression_ids = [expression_id]
+        self.update()
+
+    def _remove_fleeting_expression_layers(self) -> None:
+        if self._model is None:
+            self._fleeting_expression_ids.clear()
+            return
+        for expression_id in list(self._fleeting_expression_ids):
+            try:
+                self._model.RemoveExpression(expression_id)
+            except Exception:
+                pass
+        self._fleeting_expression_ids.clear()
+
+    def clear_fleeting_expressions(self, *, restart_motion: bool = True) -> None:
+        if not self._ready or self._model is None:
+            self._fleeting_expression_ids.clear()
+            return
+        self.makeCurrent()
+        self._remove_fleeting_expression_layers()
+        self._held_expression_id = ""
+        self._held_snapshot_applied = False
+        self._expression_motion_hold_until = 0.0
+        self._expression_resume_after_hold = ""
+        self._model.ResetExpression()
+        if self._persistent_expression_id:
+            self._model.SetExpression(self._persistent_expression_id)
+        self._restore_expression_overlays()
+        if restart_motion:
+            self._resume_idle_motion(force=True)
+        self.update()
+
+    def has_persistent_expression(self) -> bool:
+        return bool(self._persistent_expression_id)
 
     def set_mouth_open(self, value: float) -> None:
         self._mouth_open = max(0.0, min(1.0, value))
@@ -151,6 +273,14 @@ class Live2DWidget(QOpenGLWidget):
         for expression_id in overlays:
             self._model.RemoveExpression(expression_id)
 
+    def _restore_expression_overlays(self) -> None:
+        if not self._ready or self._model is None or not self._overlay_expressions:
+            return
+        known_ids = set(self._discover_expression_ids())
+        for expression_id in self._overlay_expressions:
+            if expression_id in known_ids:
+                self._model.AddExpression(expression_id)
+
     def reload_config(self, live2d_config: CharacterLive2D) -> None:
         self._live2d_config = live2d_config
         self._model_json = live2d_config.model_json_path
@@ -161,7 +291,17 @@ class Live2DWidget(QOpenGLWidget):
         self._expression_motion_hold_until = 0.0
         self._held_expression_id = ""
         self._held_snapshot_applied = False
+        self._expression_resume_after_hold = ""
+        self._persistent_expression_id = None
+        self._fleeting_expression_ids.clear()
         self._idle_motion_started = False
+        self._motion_needs_restart = True
+        self._motion_was_stopped = False
+        self._last_idle_motion_start = 0.0
+        self._motion_catalog = load_motion_catalog(self._model_json)
+        self._loaded_motion_keys.clear()
+        self._transient_motion_group = None
+        self._physics_enabled = live2d_config.physics_enabled
         self.clear_expression_overlays()
         if self._model is not None:
             live2d = get_live2d_module()
@@ -202,8 +342,9 @@ class Live2DWidget(QOpenGLWidget):
             return
         live2d = get_live2d_module()
         live2d.clearBuffer(0.0, 0.0, 0.0, 0.0)
-        self._model.SetParameterValue("ParamMouthOpenY", self._mouth_open)
         self._advance_model_frame()
+        if self._model is not None:
+            self._model.SetParameterValue("ParamMouthOpenY", self._mouth_open)
         self._model.Draw()
 
     def _advance_model_frame(self) -> None:
@@ -217,26 +358,17 @@ class Live2DWidget(QOpenGLWidget):
             and now >= self._expression_motion_hold_until
         ):
             self._expression_motion_hold_until = 0.0
+            self._expression_resume_after_hold = ""
             self._held_expression_id = ""
             self._held_snapshot_applied = False
             self._start_idle_motion()
-        core = self._model._model
-        core.Update(dt)
         if self._held_expression_id:
             if not self._held_snapshot_applied:
-                core.LoadParameters()
                 self._apply_exp3_snapshot(self._held_expression_id)
                 self._held_snapshot_applied = True
             return
-        core.LoadParameters()
-        if not core.IsMotionFinished() and core.UpdateMotion(dt):
-            core.SaveParameters()
-        core.UpdateExpression(dt)
-        if self._physics_enabled:
-            try:
-                core.UpdatePhysics(dt)
-            except Exception:
-                pass
+        self._ensure_idle_motion_playing(now)
+        self._model.Update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -269,18 +401,66 @@ class Live2DWidget(QOpenGLWidget):
     def _load_model(self) -> None:
         live2d = get_live2d_module()
         self._model = live2d.LAppModel()
-        self._model.LoadModelJson(str(self._model_json))
+        self._model.LoadModelJson(str(self._model_json), maskBufferCount=3)
         self._idle_motion_started = False
         self._model.SetScale(self._scale)
         if self.width() > 0 and self.height() > 0:
             self._model.Resize(self.width(), self.height())
         self._ready = True
+        self._motion_catalog = load_motion_catalog(self._model_json)
+        self._loaded_motion_keys.clear()
         self._frame_timer.start()
-        default_expression = self._pending_expression or self._live2d_config.default_expression
-        self._apply_expression(default_expression, hold_motion=False)
+        pending = (self._pending_expression or self._live2d_config.default_expression or "").strip()
+        self._pending_expression = None
+        self._persistent_expression_id = None
+        self._model.SetAutoBreathEnable(True)
+        self._model.SetAutoBlinkEnable(False)
         self._start_idle_motion()
+        self._restore_expression_overlays()
         if self._on_ready is not None:
             self._on_ready()
+
+    def _ensure_idle_motion_playing(self, now: float) -> None:
+        if not self._live2d_config.idle_motion_file or self._model is None:
+            return
+        if not self._model.IsMotionFinished():
+            return
+        if self._transient_motion_group is not None:
+            self._restore_visual_state_after_motion()
+            self._transient_motion_group = None
+        if (now - self._last_idle_motion_start) < 0.08:
+            return
+        self._start_idle_motion()
+
+    def _restore_visual_state_after_motion(self) -> None:
+        """语气动作结束后复位形变并回到对话基准表情，避免叠层或镂空。"""
+        if self._model is None:
+            return
+        mouth_open = self._mouth_open
+        self._model.ResetParameters()
+        self._model.ResetPose()
+        self._remove_fleeting_expression_layers()
+        self._model.ResetExpression()
+        if self._persistent_expression_id:
+            self._model.SetExpression(self._persistent_expression_id)
+        self._restore_expression_overlays()
+        self._model.SetParameterValue("ParamMouthOpenY", mouth_open)
+
+    def _ensure_motion_loaded(self, entry: Live2DMotionEntry) -> bool:
+        if self._model is None:
+            return False
+        groups = self._model.GetMotionGroups()
+        if entry.group in groups and groups[entry.group] > entry.index:
+            return True
+        motion_path = resolve_motion_file(self._model_dir, entry.file_name)
+        if motion_path is None:
+            return False
+        key = (entry.group, str(motion_path))
+        if key in self._loaded_motion_keys:
+            return True
+        self._model.LoadExtraMotion(entry.group, str(motion_path))
+        self._loaded_motion_keys.add(key)
+        return True
 
     def _start_idle_motion(self) -> None:
         if self._model is None:
@@ -298,6 +478,19 @@ class Live2DWidget(QOpenGLWidget):
                 self._model.LoadExtraMotion(live2d.MotionGroup.IDLE, str(motion_path))
                 self._idle_motion_started = True
         self._model.StartMotion(live2d.MotionGroup.IDLE, 0, live2d.MotionPriority.IDLE)
+        self._last_idle_motion_start = time.monotonic()
+        self._motion_was_stopped = False
+        self._motion_needs_restart = False
+
+    def _resume_idle_motion(self, *, force: bool = False) -> None:
+        if self._model is None or self._held_expression_id:
+            return
+        if not self._live2d_config.idle_motion_file:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_idle_motion_start) < 0.08:
+            return
+        self._start_idle_motion()
 
     def _discover_expression_ids(self) -> list[str]:
         ids: set[str] = set()
@@ -338,17 +531,21 @@ class Live2DWidget(QOpenGLWidget):
             self._model.ResetExpression()
             return
         if hold_motion:
-            self._expression_motion_hold_until = time.monotonic() + 2.5
+            self._expression_motion_hold_until = time.monotonic() + 1.8
             self._held_expression_id = expression_id
             self._held_snapshot_applied = False
+            self._expression_resume_after_hold = expression_id
             self._model.StopAllMotions()
+            self._motion_was_stopped = True
+            self._motion_needs_restart = True
             return
         self._held_expression_id = ""
         self._held_snapshot_applied = False
+        self._expression_resume_after_hold = ""
         self._expression_motion_hold_until = 0.0
         self._model.ResetExpression()
         self._model.SetExpression(expression_id)
-        self._model._model.UpdateExpression(1.0)
+        self._resume_idle_motion(force=True)
 
     def _apply_exp3_snapshot(self, expression_id: str) -> bool:
         path = self._model_dir / f"{expression_id}.exp3.json"

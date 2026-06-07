@@ -9,12 +9,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 def build_pet_tray_menu(
     parent: QWidget,
     *,
-    chinese_subtitles_checked: bool,
-    free_access_checked: bool,
     ui_locked_checked: bool = False,
     on_hide: Callable[[], None],
-    on_toggle_chinese_subtitles: Callable[[bool], None],
-    on_toggle_free_access: Callable[[bool], None],
     on_toggle_ui_locked: Callable[[bool], None] | None = None,
     on_show_history: Callable[[], None],
     on_show_settings: Callable[[], None],
@@ -36,22 +32,6 @@ def build_pet_tray_menu(
         lock_action.setEnabled(interactions_enabled)
         lock_action.triggered.connect(on_toggle_ui_locked)
         menu.addAction(lock_action)
-
-    menu.addSeparator()
-
-    subtitle_action = QAction("显示中文字幕", parent)
-    subtitle_action.setCheckable(True)
-    subtitle_action.setChecked(chinese_subtitles_checked)
-    subtitle_action.setEnabled(interactions_enabled)
-    subtitle_action.triggered.connect(on_toggle_chinese_subtitles)
-    menu.addAction(subtitle_action)
-
-    free_access_action = QAction("完整访问权限", parent)
-    free_access_action.setCheckable(True)
-    free_access_action.setChecked(free_access_checked)
-    free_access_action.setEnabled(interactions_enabled)
-    free_access_action.triggered.connect(on_toggle_free_access)
-    menu.addAction(free_access_action)
 
     menu.addSeparator()
 

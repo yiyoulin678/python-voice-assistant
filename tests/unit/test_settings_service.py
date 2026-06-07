@@ -97,6 +97,7 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert api["tts"]["provider"] == "gpt-sovits"
     assert api["tts"]["gpt_sovits"]["work_dir"] == "data/tts_bundles/installed/gpt_sovits_v2pro"
     assert api["tts"]["gpt_sovits"]["timeout_seconds"] == 22
+    assert api["tts"]["gpt_sovits"]["streaming_enabled"] is False
     assert characters["current_character_id"] == "nanami"
     assert system["mcp"]["windows_enabled"] is True
     assert system["debug"]["enabled"] is True
@@ -131,6 +132,7 @@ tts:
     settings = service.load_tts_settings(validate_enabled=False)
 
     assert settings.work_dir == root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    assert settings.streaming_enabled is False
 
     service.api_config_path.write_text(
         """
@@ -145,39 +147,8 @@ tts:
 
     legacy_settings = service.load_tts_settings(validate_enabled=False)
 
-    assert legacy_settings.work_dir is None
-
-
-def test_settings_service_saves_and_loads_genie_tts_settings() -> None:
-    root = _runtime_root("yaml_genie_tts")
-    service = AppSettingsService(root)
-    settings = GPTSoVITSTTSSettings(
-        enabled=True,
-        provider="genie-tts",
-        api_url="http://127.0.0.1:9881/",
-        ref_audio_path=root / "ref.wav",
-        ref_text_path=root / "ref.txt",
-        ref_text="hello",
-        work_dir=root / "data" / "tts_bundles" / "installed" / "genie_tts_server",
-        character_name="夜乃桜",
-        onnx_model_dir=root / "data" / "tts_bundles" / "onnx" / "sakura",
-        ref_lang="ja",
-        text_lang="ja",
-        timeout_seconds=33,
-    )
-
-    service.save_tts_settings(settings)
-    saved = load_yaml_mapping(service.api_config_path)
-    loaded = service.load_tts_settings(validate_enabled=False)
-
-    assert saved["tts"]["provider"] == "genie-tts"
-    assert saved["tts"]["genie_tts"]["api_url"] == "http://127.0.0.1:9881/"
-    assert saved["tts"]["genie_tts"]["work_dir"] == "data/tts_bundles/installed/genie_tts_server"
-    assert saved["tts"]["genie_tts"]["onnx_model_dir"] == "data/tts_bundles/onnx/sakura"
-    assert loaded.provider == "genie-tts"
-    assert loaded.work_dir == root / "data" / "tts_bundles" / "installed" / "genie_tts_server"
-    assert loaded.onnx_model_dir == root / "data" / "tts_bundles" / "onnx" / "sakura"
-    assert loaded.timeout_seconds == 33
+    assert legacy_settings.work_dir == root / "data" / "tts_bundles" / "installed" / "gpt_sovits_v2pro"
+    assert legacy_settings.streaming_enabled is False
 
 
 def test_settings_service_loads_debug_log_settings() -> None:
@@ -217,7 +188,7 @@ def test_settings_service_saves_deskpet_and_mcp_playwright_settings() -> None:
             subtitle_language="ja",
             free_access_enabled=True,
             lyric_sync_offset_seconds=2.3,
-            music_sing_along_enabled=False,
+            panel_width_percent=80,
         )
     )
     service.save_screen_observation_settings(
@@ -240,10 +211,9 @@ def test_settings_service_saves_deskpet_and_mcp_playwright_settings() -> None:
     assert system["ui"]["subtitle_language"] == "ja"
     assert system["ui"]["free_access_enabled"] is True
     assert system["ui"]["lyric_sync_offset_seconds"] == 2.3
-    assert system["ui"]["music_sing_along_enabled"] is False
+    assert system["ui"]["panel_width_percent"] == 80
     loaded = service.load_pet_ui_settings()
     assert loaded.lyric_sync_offset_seconds == 2.3
-    assert loaded.music_sing_along_enabled is False
     assert system["screen_observation"]["enabled"] is False
     assert system["reminders"]["check_interval_seconds"] == 30
     assert system["memory_curation"]["trigger_turns"] == 10
@@ -255,7 +225,7 @@ def test_settings_service_saves_deskpet_and_mcp_playwright_settings() -> None:
         subtitle_language="ja",
         free_access_enabled=True,
         lyric_sync_offset_seconds=2.3,
-        music_sing_along_enabled=False,
+        panel_width_percent=80,
     )
     assert service.load_mcp_runtime_settings() == MCPRuntimeSettings(
         windows_enabled=True,

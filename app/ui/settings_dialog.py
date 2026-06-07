@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.agent.memory import MemoryStore
+from app.config.ai_settings import AiFeatureSettings
 from app.agent.mcp import MCPRuntimeSettings
 from app.config.character_archive import (
     CharacterArchiveError,
@@ -45,6 +48,8 @@ from app.agent.memory_curator import (
     MemoryCurationSettings,
 )
 from app.config.deskpet_settings import (
+    PANEL_WIDTH_PERCENT_MAX,
+    PANEL_WIDTH_PERCENT_MIN,
     REMINDER_CHECK_INTERVAL_DEFAULT_SECONDS,
     REMINDER_CHECK_INTERVAL_MAX_SECONDS,
     REMINDER_CHECK_INTERVAL_MIN_SECONDS,
@@ -53,10 +58,22 @@ from app.config.deskpet_settings import (
     ScreenObservationSettings,
     SUBTITLE_LANGUAGE_JA,
     SUBTITLE_LANGUAGE_ZH,
+    normalize_panel_width_percent,
 )
 from app.config.settings_service import AppSettingsService, DebugLogSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.config.character_loader import CharacterProfile, CharacterRegistry
+from app.config.character_loader import (
+    CharacterConfigError,
+    CharacterProfile,
+    CharacterRegistry,
+    read_character_card,
+    write_character_card,
+)
+from app.ui.themes import (
+    UI_THEME_CHOICES,
+    build_settings_dialog_stylesheet,
+    ui_theme_palette,
+)
 from app.ui.portrait_controller import (
     PORTRAIT_SCALE_DEFAULT_PERCENT,
     PORTRAIT_SCALE_MAX_PERCENT,
@@ -88,13 +105,24 @@ from app.voice.stt_settings import (
     STTSettings,
 )
 from app.voice.tts import (
-    DEFAULT_GENIE_TTS_API_URL,
     DEFAULT_GPT_SOVITS_API_URL,
-    TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS,
     GPTSoVITSTTSSettings,
     TTSConfigError,
 )
+from app.platforms.napcat.network import suggested_connect_hosts
+from app.platforms.napcat.settings import (
+    DEFAULT_NAPCAT_BIND_HOST,
+    DEFAULT_NAPCAT_HOST,
+    DEFAULT_NAPCAT_PATH,
+    DEFAULT_NAPCAT_PORT,
+    NAPCAT_REPLY_BOTH,
+    NAPCAT_REPLY_TEXT_ONLY,
+    NAPCAT_REPLY_VOICE_ONLY,
+    NapCatSettings,
+)
+from app.ui.ai_settings_panel import AiSettingsPanel
+from app.ui.settings_scroll import wrap_scrollable
 from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
 from sdk.types import ToolsTabContribution
 
@@ -188,6 +216,8 @@ class SettingsDialog(QDialog):
         screen_observation_settings: ScreenObservationSettings | None = None,
         reminder_settings: ReminderSettings | None = None,
         memory_curation_settings: MemoryCurationSettings | None = None,
+        napcat_settings: NapCatSettings | None = None,
+        on_open_napcat_console: Callable[[], None] | None = None,
         subtitle_language: str = SUBTITLE_LANGUAGE_ZH,
         free_access_enabled: bool = False,
     ) -> None:
@@ -204,6 +234,11 @@ class SettingsDialog(QDialog):
         self.memory_curation_settings = (
             memory_curation_settings or settings_service.load_memory_curation_settings()
         )
+        self.ai_feature_settings = settings_service.load_ai_feature_settings()
+        self.napcat_settings = (
+            napcat_settings or settings_service.load_napcat_settings()
+        ).normalized()
+        self._on_open_napcat_console = on_open_napcat_console
         self.initial_subtitle_language = (
             SUBTITLE_LANGUAGE_ZH
             if str(subtitle_language).strip().lower() == SUBTITLE_LANGUAGE_ZH
@@ -241,6 +276,8 @@ class SettingsDialog(QDialog):
         self.result_screen_observation_settings: ScreenObservationSettings | None = None
         self.result_reminder_settings: ReminderSettings | None = None
         self.result_memory_curation_settings: MemoryCurationSettings | None = None
+        self.result_ai_feature_settings: AiFeatureSettings | None = None
+        self.result_napcat_settings: NapCatSettings | None = None
         self._api_test_thread: QThread | None = None
         self._api_test_worker: ApiConnectionTestWorker | None = None
         self._memory_list_thread: QThread | None = None
@@ -251,9 +288,15 @@ class SettingsDialog(QDialog):
         self._syncing_memory_selection = False
 
         self.setWindowTitle("设置")
-        self.resize(600, 520)
+        self.setMinimumSize(660, 560)
+        self.resize(780, 720)
 
         tabs = QTabWidget(self)
+        tabs.setUsesScrollButtons(True)
+        tabs.setDocumentMode(True)
+        self._settings_tabs = tabs
+        self._ai_tab_index: int | None = None
+        self._ai_panel_loaded = False
         tabs.addTab(self._build_character_tab(character_registry, current_character), "角色")
         tabs.addTab(self._build_deskpet_tab(), "桌宠")
         tabs.addTab(self._build_api_tab(api_settings), "API")
@@ -272,6 +315,7 @@ class SettingsDialog(QDialog):
             ),
             "工具",
         )
+        tabs.addTab(self._build_platform_tab(self.napcat_settings), "平台")
         tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
 
         if UserSession.role == "admin":
@@ -282,6 +326,7 @@ class SettingsDialog(QDialog):
         
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
+        self._ai_tab_index = tabs.addTab(QWidget(self), "AI")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
@@ -295,91 +340,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(tabs, 1)
         layout.addWidget(buttons)
         self.setLayout(layout)
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #fff6fa;
-                color: #3d2b35;
-                font-family: "Microsoft YaHei", "Yu Gothic UI", sans-serif;
-                font-size: 14px;
-            }
-            QTabWidget::pane {
-                border: 1px solid rgba(238, 172, 200, 0.54);
-                border-radius: 8px;
-                background: rgba(255, 232, 241, 0.70);
-            }
-            QTabBar::tab {
-                background: rgba(255, 232, 241, 0.75);
-                border: 1px solid rgba(238, 172, 200, 0.48);
-                border-bottom: none;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                padding: 7px 18px;
-                margin-right: 4px;
-                color: #7a3656;
-            }
-            QTabBar::tab:selected {
-                background: #ffffff;
-                color: #b13e73;
-                font-weight: 700;
-            }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QTableWidget, QComboBox {
-                background: rgba(255, 255, 255, 0.92);
-                border: 1px solid rgba(238, 172, 200, 0.58);
-                border-radius: 7px;
-                padding: 6px 8px;
-                color: #3d2b35;
-                selection-background-color: rgba(213, 91, 145, 0.28);
-            }
-            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QComboBox:focus {
-                border: 1px solid rgba(213, 91, 145, 0.76);
-                background: #ffffff;
-            }
-            QTableWidget {
-                gridline-color: rgba(238, 172, 200, 0.42);
-                alternate-background-color: rgba(255, 244, 249, 0.86);
-            }
-            QHeaderView::section {
-                background: #ffe8f1;
-                border: 1px solid rgba(238, 172, 200, 0.52);
-                color: #7a3656;
-                padding: 6px;
-                font-weight: 700;
-            }
-            QCheckBox {
-                color: #4b3440;
-                spacing: 8px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1px solid rgba(213, 91, 145, 0.68);
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: #d55b91;
-                border: 1px solid #b13e73;
-            }
-            QPushButton {
-                background: #d55b91;
-                border: 1px solid rgba(177, 62, 115, 0.55);
-                border-radius: 8px;
-                color: white;
-                min-width: 72px;
-                padding: 8px 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #bf3f7a;
-            }
-            QPushButton:disabled {
-                background: rgba(213, 91, 145, 0.42);
-                border: 1px solid rgba(238, 172, 200, 0.45);
-                color: rgba(255, 255, 255, 0.76);
-            }
-            """
-        )
+        tabs.currentChanged.connect(self._on_settings_tab_changed)
+        self._apply_dialog_theme(self.pet_ui_settings.normalized().ui_theme)
 
     def _build_character_tab(
         self,
@@ -387,22 +349,48 @@ class SettingsDialog(QDialog):
         current_character: CharacterProfile | None,
     ) -> QWidget:
         tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(12)
+
         self.character_combo = QComboBox(tab)
         self.character_empty_label = QLabel("尚未导入角色", tab)
         self._refresh_character_combo(
             current_character.id if current_character is not None else None
         )
+        self.character_combo.currentIndexChanged.connect(self._load_selected_character_card)
 
         form_layout = QFormLayout()
-        form_layout.setContentsMargins(16, 18, 16, 16)
+        form_layout.setContentsMargins(0, 0, 0, 0)
         form_layout.setSpacing(12)
         form_layout.addRow("状态", self.character_empty_label)
         form_layout.addRow("当前角色", self.character_combo)
         form_layout.addRow("立绘大小", self._build_portrait_scale_control(tab))
         form_layout.addRow("角色包", self._build_character_archive_controls(tab))
-        tab.setLayout(form_layout)
+        layout.addLayout(form_layout)
+
+        self.desktop_pet_rules_check = QCheckBox(
+            "附加桌宠运行规则（边界、朗读习惯等通用约束，会拼在人设后面）",
+            tab,
+        )
+        normalized_ui = self.pet_ui_settings.normalized()
+        self.desktop_pet_rules_check.setChecked(normalized_ui.desktop_pet_rules_enabled)
+
+        self.character_card_hint = QLabel(
+            "人设会作为系统提示词影响回复风格。切换角色时会加载对应 card 文件，点保存后写入角色包。",
+            tab,
+        )
+        self.character_card_hint.setWordWrap(True)
+        self.character_card_edit = QTextEdit(tab)
+        self.character_card_edit.setPlaceholderText("在此编写角色人设（Markdown 文本）……")
+        self.character_card_edit.setMinimumHeight(240)
+        layout.addWidget(self.desktop_pet_rules_check)
+        layout.addWidget(self.character_card_hint)
+        layout.addWidget(self.character_card_edit, 1)
+
+        self._load_selected_character_card()
         self._sync_character_archive_controls()
-        return tab
+        return wrap_scrollable(tab)
 
     def _build_deskpet_tab(self) -> QWidget:
         tab = QWidget(self)
@@ -414,6 +402,13 @@ class SettingsDialog(QDialog):
         )
         self.hover_only_ui_check.setChecked(normalized_ui.hover_only_ui)
 
+        self.ui_theme_combo = QComboBox(tab)
+        for theme_id, label in UI_THEME_CHOICES:
+            self.ui_theme_combo.addItem(label, theme_id)
+        theme_index = self.ui_theme_combo.findData(normalized_ui.ui_theme)
+        self.ui_theme_combo.setCurrentIndex(theme_index if theme_index >= 0 else 0)
+        self.ui_theme_combo.currentIndexChanged.connect(self._on_ui_theme_changed)
+
         self.subtitle_language_combo = QComboBox(tab)
         self.subtitle_language_combo.addItem("中文", SUBTITLE_LANGUAGE_ZH)
         self.subtitle_language_combo.addItem("日本語", SUBTITLE_LANGUAGE_JA)
@@ -422,6 +417,31 @@ class SettingsDialog(QDialog):
         )
         self.subtitle_language_combo.setCurrentIndex(
             language_index if language_index >= 0 else 0
+        )
+        self.subtitle_language_combo.setToolTip(
+            "控制桌宠气泡与历史记录显示中文翻译或日文原文。"
+        )
+
+        self.free_access_enabled_check = QCheckBox(
+            "完整工具访问权限（跳过部分高风险工具确认）",
+            tab,
+        )
+        self.free_access_enabled_check.setChecked(self.initial_free_access_enabled)
+        self.free_access_enabled_check.setToolTip(
+            "开启后，多数需确认的工具可直接执行；删除文件等高风险操作仍会要求确认。"
+        )
+
+        self.strict_ja_zh_correspondence_check = QCheckBox(
+            "完全对应（字幕与日语 TTS 语气、句意一致，禁止概括缩写）",
+            tab,
+        )
+        self.strict_ja_zh_correspondence_check.setChecked(
+            normalized_ui.strict_ja_zh_correspondence_enabled
+        )
+        self.strict_ja_zh_correspondence_check.setToolTip(
+            "开启后，模型会被要求让 ja 与 zh 的语气、因果转折和完整句意成对出现；"
+            "若检测到 zh 比 ja 明显更长或只写了一半意思，会自动请求模型修复一次。"
+            "同时 TTS 会整段合成，减少切分丢句。"
         )
 
         normalized_reminders = self.reminder_settings.normalized()
@@ -453,33 +473,51 @@ class SettingsDialog(QDialog):
             "歌词相对播放进度的提前量。偏慢可加大（如 2.0），偏快可减小或为负。"
         )
 
-        self.music_sing_along_enabled_check = QCheckBox(
-            "音乐播放时安安跟唱（Live2D 口型与表情，不播放语音）",
-            tab,
-        )
-        self.music_sing_along_enabled_check.setChecked(normalized_ui.music_sing_along_enabled)
-
-        deskpet_hint = QLabel(
+        self.deskpet_hint = QLabel(
             "悬停 UI 仅对 Live2D 角色生效；「锁定界面」后仅立绘区可点，窗口空白处穿透。\n"
             "歌词从 LRCLIB 拉取；网易云 SMTC 无进度，靠本地计时，可用「歌词提前量」微调同步。",
             tab,
         )
-        deskpet_hint.setWordWrap(True)
-        deskpet_hint.setStyleSheet("color: #9b4f72;")
+        self.deskpet_hint.setWordWrap(True)
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.hover_only_ui_check)
+        form_layout.addRow("面板宽度", self._build_panel_width_control(tab))
+        form_layout.addRow("界面主题", self.ui_theme_combo)
         form_layout.addRow("字幕语言", self.subtitle_language_combo)
+        form_layout.addRow("", self.free_access_enabled_check)
+        form_layout.addRow("", self.strict_ja_zh_correspondence_check)
         form_layout.addRow("", self.reminders_enabled_check)
         form_layout.addRow("提醒检查间隔", self.reminder_interval_spin)
         form_layout.addRow("", self.music_plugin_enabled_check)
         form_layout.addRow("歌词提前量", self.lyric_sync_offset_spin)
-        form_layout.addRow("", self.music_sing_along_enabled_check)
-        form_layout.addRow(deskpet_hint)
+        form_layout.addRow(self.deskpet_hint)
         tab.setLayout(form_layout)
-        return tab
+        return wrap_scrollable(tab)
+
+    def _on_ui_theme_changed(self) -> None:
+        if not hasattr(self, "ui_theme_combo"):
+            return
+        theme_id = str(self.ui_theme_combo.currentData() or "")
+        self._apply_dialog_theme(theme_id)
+
+    def _apply_dialog_theme(self, theme_id: str) -> None:
+        self.setStyleSheet(build_settings_dialog_stylesheet(theme_id))
+        palette = ui_theme_palette(theme_id)
+        if hasattr(self, "deskpet_hint"):
+            self.deskpet_hint.setStyleSheet(f"color: {palette.hint_text};")
+        if hasattr(self, "restart_hint"):
+            self.restart_hint.setStyleSheet(f"color: {palette.hint_text};")
+        if hasattr(self, "memory_status_label"):
+            self.memory_status_label.setStyleSheet(f"color: {palette.hint_text};")
+        if hasattr(self, "memory_selection_label"):
+            self.memory_selection_label.setStyleSheet(f"color: {palette.tab_text};")
+        if hasattr(self, "memory_preview_label"):
+            self.memory_preview_label.setStyleSheet(f"color: {palette.system_text};")
+        if hasattr(self, "character_card_hint"):
+            self.character_card_hint.setStyleSheet(f"color: {palette.hint_text};")
 
     def _build_character_archive_controls(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
@@ -498,6 +536,45 @@ class SettingsDialog(QDialog):
         container.setLayout(layout)
         return container
 
+    def _build_panel_width_control(self, parent: QWidget) -> QWidget:
+        container = QWidget(parent)
+        normalized_ui = self.pet_ui_settings.normalized()
+        panel_width_percent = normalized_ui.panel_width_percent
+
+        self.panel_width_slider = QSlider(Qt.Orientation.Horizontal, container)
+        self.panel_width_slider.setRange(
+            PANEL_WIDTH_PERCENT_MIN,
+            PANEL_WIDTH_PERCENT_MAX,
+        )
+        self.panel_width_slider.setSingleStep(5)
+        self.panel_width_slider.setPageStep(25)
+        self.panel_width_slider.setTickInterval(50)
+        self.panel_width_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.panel_width_slider.setValue(panel_width_percent)
+
+        self.panel_width_spin = QSpinBox(container)
+        self.panel_width_spin.setRange(
+            PANEL_WIDTH_PERCENT_MIN,
+            PANEL_WIDTH_PERCENT_MAX,
+        )
+        self.panel_width_spin.setSingleStep(5)
+        self.panel_width_spin.setSuffix("%")
+        self.panel_width_spin.setValue(panel_width_percent)
+        self.panel_width_spin.setToolTip(
+            "调整气泡与输入栏整体宽度（20%–500%）。100% 为默认宽度。"
+        )
+
+        self.panel_width_slider.valueChanged.connect(self.panel_width_spin.setValue)
+        self.panel_width_spin.valueChanged.connect(self.panel_width_slider.setValue)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(self.panel_width_slider, 1)
+        layout.addWidget(self.panel_width_spin)
+        container.setLayout(layout)
+        return container
+
     def _build_portrait_scale_control(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
         self.portrait_scale_slider = QSlider(Qt.Orientation.Horizontal, container)
@@ -506,8 +583,8 @@ class SettingsDialog(QDialog):
             PORTRAIT_SCALE_MAX_PERCENT,
         )
         self.portrait_scale_slider.setSingleStep(5)
-        self.portrait_scale_slider.setPageStep(10)
-        self.portrait_scale_slider.setTickInterval(25)
+        self.portrait_scale_slider.setPageStep(25)
+        self.portrait_scale_slider.setTickInterval(50)
         self.portrait_scale_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.portrait_scale_slider.setValue(self.portrait_scale_percent)
 
@@ -519,6 +596,10 @@ class SettingsDialog(QDialog):
         self.portrait_scale_spin.setSingleStep(5)
         self.portrait_scale_spin.setSuffix("%")
         self.portrait_scale_spin.setValue(self.portrait_scale_percent)
+        self.portrait_scale_spin.setToolTip(
+            "调整立绘显示大小（20%–200%）。100% 为原始尺寸；"
+            "数值越大窗口与立绘同步放大，可拖动桌宠调整位置。"
+        )
 
         self.portrait_scale_slider.valueChanged.connect(self.portrait_scale_spin.setValue)
         self.portrait_scale_spin.valueChanged.connect(self.portrait_scale_slider.setValue)
@@ -569,7 +650,6 @@ class SettingsDialog(QDialog):
 
         self.tts_provider_combo = QComboBox(tab)
         self.tts_provider_combo.addItem("GPT-SoVITS（GPU）", TTS_PROVIDER_GPT_SOVITS)
-        self.tts_provider_combo.addItem("Genie TTS（CPU）", TTS_PROVIDER_GENIE)
         provider_index = self.tts_provider_combo.findData(settings.provider)
         self.tts_provider_combo.setCurrentIndex(provider_index if provider_index >= 0 else 0)
 
@@ -635,7 +715,7 @@ class SettingsDialog(QDialog):
             "选择录音用的麦克风；「系统默认」使用 Windows 当前默认输入设备。\n"
             "若提示读不到声音：在 Windows 声音设置里调高该麦克风的输入音量；"
             "使用 Voicemeeter 时请确认路由到所选设备；实体麦优先选名称含 Microphone 的项。\n"
-            "保存后桌宠「语音」按钮将使用所选设备。"
+            "「语音」为点击或长按录音，松手/再次点击后识别为文字。"
         )
         stt_hint.setWordWrap(True)
 
@@ -706,12 +786,18 @@ class SettingsDialog(QDialog):
             tab,
         )
         self.screen_observation_enabled_check.setChecked(normalized_screen.enabled)
+        normalized_proactive = proactive_care_settings.normalized()
+        self.proactive_topic_enabled_check = QCheckBox(
+            "空闲时主动找话题聊天（无需截图）",
+            tab,
+        )
+        self.proactive_topic_enabled_check.setChecked(normalized_proactive.enabled)
         self.autonomous_screen_observation_check = QCheckBox(
-            "允许 AI 在后台自主观察屏幕（主动关怀）",
+            "主动搭话时附带后台屏幕截图（需开启上方截图权限）",
             tab,
         )
         self.autonomous_screen_observation_check.setChecked(
-            normalized_screen.autonomous_enabled
+            normalized_proactive.screen_context_enabled
         )
         self.screen_observation_enabled_check.toggled.connect(
             self._sync_screen_observation_controls
@@ -749,23 +835,158 @@ class SettingsDialog(QDialog):
         self.proactive_batch_limit_spin.setValue(
             proactive_care_settings.normalized().screen_context_batch_limit
         )
+        self.proactive_topic_enabled_check.toggled.connect(
+            self._sync_proactive_interval_controls
+        )
         self.autonomous_screen_observation_check.toggled.connect(
             self._sync_proactive_interval_controls
         )
         self._sync_proactive_interval_controls(
-            self.autonomous_screen_observation_check.isChecked()
+            self.proactive_topic_enabled_check.isChecked()
+            or self.autonomous_screen_observation_check.isChecked()
         )
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.screen_observation_enabled_check)
+        form_layout.addRow("", self.proactive_topic_enabled_check)
         form_layout.addRow("", self.autonomous_screen_observation_check)
         form_layout.addRow("主动检查间隔", self.proactive_check_interval_spin)
         form_layout.addRow("主动打扰冷却", self.proactive_cooldown_spin)
+        self.proactive_countdown_hint_label = QLabel(
+            "开启后，托盘图标悬停与输入框会显示下次主动搭话的倒计时。",
+            tab,
+        )
+        self.proactive_countdown_hint_label.setWordWrap(True)
+        form_layout.addRow("", self.proactive_countdown_hint_label)
         form_layout.addRow("单次最多发送截图", self.proactive_batch_limit_spin)
         tab.setLayout(form_layout)
         return tab
+
+    def _build_platform_tab(self, settings: NapCatSettings) -> QWidget:
+        tab = QWidget(self)
+        normalized = settings.normalized()
+
+        self.napcat_enabled_check = QCheckBox(
+            "启用 NapCat / QQ 接入（反向 WebSocket）",
+            tab,
+        )
+        self.napcat_enabled_check.setChecked(normalized.enabled)
+
+        self.napcat_host_edit = QLineEdit(normalized.host, tab)
+        self.napcat_host_edit.setPlaceholderText("0.0.0.0（监听本机所有网卡，同 AstrBot 反向 WS）")
+        self.napcat_connect_host_combo = QComboBox(tab)
+        self.napcat_connect_host_combo.setEditable(True)
+        for host in suggested_connect_hosts():
+            self.napcat_connect_host_combo.addItem(host)
+        connect_index = self.napcat_connect_host_combo.findText(normalized.connect_host)
+        if connect_index >= 0:
+            self.napcat_connect_host_combo.setCurrentIndex(connect_index)
+        else:
+            self.napcat_connect_host_combo.setEditText(normalized.resolve_connect_host())
+        self.napcat_port_spin = QSpinBox(tab)
+        self.napcat_port_spin.setRange(1, 65535)
+        self.napcat_port_spin.setValue(normalized.port)
+        self.napcat_path_edit = QLineEdit(normalized.path, tab)
+        self.napcat_token_edit = QLineEdit(normalized.token, tab)
+        self.napcat_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.napcat_token_edit.setPlaceholderText("可选，与 NapCat WebSocket 客户端 token 一致")
+
+        self.napcat_allow_private_check = QCheckBox("允许私聊", tab)
+        self.napcat_allow_private_check.setChecked(normalized.allow_private)
+        self.napcat_allow_group_check = QCheckBox("允许群聊（实验性）", tab)
+        self.napcat_allow_group_check.setChecked(normalized.allow_group)
+
+        self.napcat_history_limit_spin = QSpinBox(tab)
+        self.napcat_history_limit_spin.setRange(2, 100)
+        self.napcat_history_limit_spin.setValue(normalized.history_limit)
+        self.napcat_history_limit_spin.setSuffix(" 条")
+
+        self.napcat_busy_reply_edit = QLineEdit(normalized.busy_reply_text, tab)
+
+        self.napcat_reply_mode_combo = QComboBox(tab)
+        self.napcat_reply_mode_combo.addItem("文字 + 语音", NAPCAT_REPLY_BOTH)
+        self.napcat_reply_mode_combo.addItem("仅文字", NAPCAT_REPLY_TEXT_ONLY)
+        self.napcat_reply_mode_combo.addItem("仅语音", NAPCAT_REPLY_VOICE_ONLY)
+        reply_mode_index = self.napcat_reply_mode_combo.findData(normalized.reply_mode)
+        self.napcat_reply_mode_combo.setCurrentIndex(
+            reply_mode_index if reply_mode_index >= 0 else 0
+        )
+
+        self.napcat_url_hint_label = QLabel(self._napcat_websocket_url_hint_text(), tab)
+        self.napcat_url_hint_label.setWordWrap(True)
+
+        napcat_setup_hint = QLabel(
+            "桌宠相当于 AstrBot 的「反向 WebSocket 服务端」：监听填 0.0.0.0，"
+            "NapCat 客户端 URL 填下方具体 IP 地址。先启动桌宠，再启动 NapCat。",
+            tab,
+        )
+        napcat_setup_hint.setWordWrap(True)
+
+        for widget in (
+            self.napcat_host_edit,
+            self.napcat_port_spin,
+            self.napcat_path_edit,
+        ):
+            if isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._refresh_napcat_url_hint)
+            else:
+                widget.valueChanged.connect(self._refresh_napcat_url_hint)
+        self.napcat_connect_host_combo.currentTextChanged.connect(self._refresh_napcat_url_hint)
+
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(16, 18, 16, 16)
+        form_layout.setSpacing(12)
+        form_layout.addRow("", self.napcat_enabled_check)
+        form_layout.addRow("", napcat_setup_hint)
+        form_layout.addRow("反向 WS 监听", self.napcat_host_edit)
+        form_layout.addRow("监听端口", self.napcat_port_spin)
+        form_layout.addRow("WebSocket 路径", self.napcat_path_edit)
+        form_layout.addRow("NapCat 填写 IP", self.napcat_connect_host_combo)
+        form_layout.addRow("NapCat 连接地址", self.napcat_url_hint_label)
+        form_layout.addRow("Token", self.napcat_token_edit)
+        form_layout.addRow("", self.napcat_allow_private_check)
+        form_layout.addRow("", self.napcat_allow_group_check)
+        form_layout.addRow("每会话历史条数", self.napcat_history_limit_spin)
+        form_layout.addRow("QQ 回复内容", self.napcat_reply_mode_combo)
+        form_layout.addRow("桌宠忙碌时回复", self.napcat_busy_reply_edit)
+        if self._on_open_napcat_console is not None:
+            self.napcat_console_button = QPushButton("打开 QQ 控制台", tab)
+            self.napcat_console_button.clicked.connect(self._on_open_napcat_console)
+            self.napcat_console_button.setToolTip(
+                "查看 QQ 入站消息、连接状态与最近回复，无需再从右键菜单进入。"
+            )
+            form_layout.addRow("QQ 控制台", self.napcat_console_button)
+        tab.setLayout(form_layout)
+        return tab
+
+    def _current_napcat_form_settings(self) -> NapCatSettings:
+        host_edit = getattr(self, "napcat_host_edit", None)
+        port_spin = getattr(self, "napcat_port_spin", None)
+        path_edit = getattr(self, "napcat_path_edit", None)
+        connect_combo = getattr(self, "napcat_connect_host_combo", None)
+        if host_edit is None or port_spin is None or path_edit is None:
+            return self.napcat_settings.normalized()
+        return NapCatSettings(
+            host=host_edit.text() or DEFAULT_NAPCAT_BIND_HOST,
+            port=port_spin.value() or DEFAULT_NAPCAT_PORT,
+            path=path_edit.text() or DEFAULT_NAPCAT_PATH,
+            connect_host=(
+                connect_combo.currentText().strip() if connect_combo is not None else ""
+            ),
+        ).normalized()
+
+    def _napcat_websocket_url_hint_text(self) -> str:
+        lines = self._current_napcat_form_settings().websocket_url_hint_lines()
+        if len(lines) == 1:
+            return lines[0]
+        return f"{lines[0]}\n同机调试：{lines[1]}"
+
+    def _refresh_napcat_url_hint(self) -> None:
+        label = getattr(self, "napcat_url_hint_label", None)
+        if label is not None:
+            label.setText(self._napcat_websocket_url_hint_text())
 
     def _build_mcp_tab(
         self,
@@ -786,7 +1007,7 @@ class SettingsDialog(QDialog):
             tab,
         )
         restart_hint.setWordWrap(True)
-        restart_hint.setStyleSheet("color: #9b4f72;")
+        self.restart_hint = restart_hint
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(16, 18, 16, 16)
@@ -814,12 +1035,6 @@ class SettingsDialog(QDialog):
         self.debug_body_enabled_check.setEnabled(self.debug_log_enabled_check.isChecked())
         self.debug_file_enabled_check = QCheckBox("输出文件运行日志", tab)
         self.debug_file_enabled_check.setChecked(debug_settings.file_enabled)
-
-        self.free_access_enabled_check = QCheckBox(
-            "完整工具访问权限（跳过部分高风险工具确认）",
-            tab,
-        )
-        self.free_access_enabled_check.setChecked(self.initial_free_access_enabled)
 
         normalized_memory = self.memory_curation_settings
         self.memory_curation_enabled_check = QCheckBox("自动整理长期记忆", tab)
@@ -861,7 +1076,6 @@ class SettingsDialog(QDialog):
         form_layout.addRow("", self.debug_log_enabled_check)
         form_layout.addRow("", self.debug_body_enabled_check)
         form_layout.addRow("", self.debug_file_enabled_check)
-        form_layout.addRow("", self.free_access_enabled_check)
         form_layout.addRow("", self.memory_curation_enabled_check)
         form_layout.addRow("自动整理触发", self.memory_curation_trigger_spin)
         form_layout.addRow("历史回填上限", self.memory_curation_backfill_spin)
@@ -875,7 +1089,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow(restart_button)
         form_layout.addRow(restart_hint)
         tab.setLayout(form_layout)
-        return tab
+        return wrap_scrollable(tab)
 
     @Slot()
     def _restart_application_from_settings(self) -> None:
@@ -905,10 +1119,28 @@ class SettingsDialog(QDialog):
 
     @Slot(bool)
     def _sync_proactive_interval_controls(self, enabled: bool) -> None:
-        """主动屏幕获取关闭时，不允许调整主动关怀时间参数。"""
-        self.proactive_check_interval_spin.setEnabled(enabled)
-        self.proactive_cooldown_spin.setEnabled(enabled)
-        self.proactive_batch_limit_spin.setEnabled(enabled)
+        topic_enabled = self.proactive_topic_enabled_check.isChecked()
+        screen_enabled = (
+            self.screen_observation_enabled_check.isChecked()
+            and self.autonomous_screen_observation_check.isChecked()
+        )
+        controls_enabled = topic_enabled or screen_enabled
+        self.proactive_check_interval_spin.setEnabled(controls_enabled)
+        self.proactive_cooldown_spin.setEnabled(controls_enabled)
+        self.proactive_batch_limit_spin.setEnabled(screen_enabled)
+
+    @Slot(int)
+    def _on_settings_tab_changed(self, index: int) -> None:
+        if self._ai_tab_index is None or index != self._ai_tab_index:
+            return
+        if not self._ai_panel_loaded:
+            panel = AiSettingsPanel(self.base_dir, self.ai_feature_settings, self)
+            self.ai_settings_panel = panel
+            self._settings_tabs.removeTab(self._ai_tab_index)
+            self._ai_tab_index = self._settings_tabs.insertTab(self._ai_tab_index, panel, "AI")
+            self._ai_panel_loaded = True
+        if hasattr(self, "ai_settings_panel"):
+            self.ai_settings_panel.refresh_on_show()
 
     def _build_memory_tab(self, memory_store: MemoryStore) -> QWidget:
         tab = QWidget(self)
@@ -921,7 +1153,6 @@ class SettingsDialog(QDialog):
         self.memory_refresh_button = QPushButton("刷新", tab)
         self.memory_refresh_button.clicked.connect(self._load_memory_entries)
         self.memory_status_label = QLabel("正在加载长期记忆...", tab)
-        self.memory_status_label.setStyleSheet("color: #9b4f72;")
 
         self.memory_table = QTableWidget(0, 4, tab)
         self.memory_table.setHorizontalHeaderLabels(["", "内容", "更新时间", "ID"])
@@ -931,6 +1162,7 @@ class SettingsDialog(QDialog):
         self.memory_table.verticalHeader().setVisible(False)
         self.memory_table.setAlternatingRowColors(True)
         self.memory_table.setWordWrap(True)
+        self.memory_table.setMaximumHeight(220)
         self.memory_table.itemClicked.connect(self._handle_memory_item_clicked)
         header = self.memory_table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -951,7 +1183,6 @@ class SettingsDialog(QDialog):
         self._sync_memory_select_all_check_geometry()
 
         self.memory_selection_label = QLabel("已选择 0 条", tab)
-        self.memory_selection_label.setStyleSheet("color: #7a3656;")
         self.memory_delete_button = QPushButton("删除选中", tab)
         self.memory_delete_button.setEnabled(False)
         self.memory_delete_button.clicked.connect(self._delete_memory_entry)
@@ -960,7 +1191,6 @@ class SettingsDialog(QDialog):
         self.memory_clear_selection_button.clicked.connect(self._clear_memory_selection)
         self.memory_preview_label = QLabel("未选择记忆", tab)
         self.memory_preview_label.setWordWrap(True)
-        self.memory_preview_label.setStyleSheet("color: #6d4a5b;")
 
         self.memory_new_button = QPushButton("新增记忆", tab)
         self.memory_new_button.setCheckable(True)
@@ -1007,7 +1237,7 @@ class SettingsDialog(QDialog):
         self._show_memory_placeholder("正在加载长期记忆...")
         self._clear_memory_editor()
         self._load_memory_entries()
-        return tab
+        return wrap_scrollable(tab)
 
     def _load_memory_entries(self) -> None:
         if self.memory_store is None or not hasattr(self, "memory_table"):
@@ -1486,6 +1716,9 @@ class SettingsDialog(QDialog):
 
         self.result_api_settings = api_settings
         self.result_tts_settings = tts_settings
+        if not self._save_selected_character_card():
+            return
+
         self.result_character_id = character_id
         self.result_portrait_scale_percent = self._selected_portrait_scale_percent()
         (
@@ -1496,11 +1729,12 @@ class SettingsDialog(QDialog):
             self.reply_segment_pause_spin.value(),
         )
         proactive_screen_context_enabled = (
-            self.screen_observation_enabled_check.isChecked()
+            self.proactive_topic_enabled_check.isChecked()
+            and self.screen_observation_enabled_check.isChecked()
             and self.autonomous_screen_observation_check.isChecked()
         )
         self.result_proactive_care_settings = ProactiveCareSettings(
-            enabled=proactive_screen_context_enabled,
+            enabled=self.proactive_topic_enabled_check.isChecked(),
             screen_context_enabled=proactive_screen_context_enabled,
             check_interval_minutes=self.proactive_check_interval_spin.value(),
             cooldown_minutes=self.proactive_cooldown_spin.value(),
@@ -1514,7 +1748,10 @@ class SettingsDialog(QDialog):
             music_plugin_enabled=self.music_plugin_enabled_check.isChecked(),
             music_default_source=pet_ui.music_default_source,
             lyric_sync_offset_seconds=self.lyric_sync_offset_spin.value(),
-            music_sing_along_enabled=self.music_sing_along_enabled_check.isChecked(),
+            ui_theme=str(self.ui_theme_combo.currentData() or ""),
+            desktop_pet_rules_enabled=self.desktop_pet_rules_check.isChecked(),
+            strict_ja_zh_correspondence_enabled=self.strict_ja_zh_correspondence_check.isChecked(),
+            panel_width_percent=self._selected_panel_width_percent(),
         ).normalized()
         self.result_screen_observation_settings = ScreenObservationSettings(
             enabled=self.screen_observation_enabled_check.isChecked(),
@@ -1529,10 +1766,29 @@ class SettingsDialog(QDialog):
             trigger_turns=self.memory_curation_trigger_spin.value(),
             backfill_limit=self.memory_curation_backfill_spin.value(),
         )
+        if self._ai_panel_loaded and hasattr(self, "ai_settings_panel"):
+            self.result_ai_feature_settings = self.ai_settings_panel.collect_ai_feature_settings()
+        else:
+            self.result_ai_feature_settings = self.ai_feature_settings
         self.result_mcp_settings = MCPRuntimeSettings(
             windows_enabled=self.windows_mcp_enabled_check.isChecked(),
             playwright_enabled=self.playwright_mcp_enabled_check.isChecked(),
         )
+        self.result_napcat_settings = NapCatSettings(
+            enabled=self.napcat_enabled_check.isChecked(),
+            host=self.napcat_host_edit.text() or DEFAULT_NAPCAT_BIND_HOST,
+            port=self.napcat_port_spin.value(),
+            path=self.napcat_path_edit.text() or DEFAULT_NAPCAT_PATH,
+            connect_host=self.napcat_connect_host_combo.currentText().strip(),
+            token=self.napcat_token_edit.text(),
+            allow_private=self.napcat_allow_private_check.isChecked(),
+            allow_group=self.napcat_allow_group_check.isChecked(),
+            history_limit=self.napcat_history_limit_spin.value(),
+            busy_reply_text=self.napcat_busy_reply_edit.text(),
+            reply_mode=str(
+                self.napcat_reply_mode_combo.currentData() or NAPCAT_REPLY_BOTH
+            ),
+        ).normalized()
         self.result_debug_log_settings = DebugLogSettings(
             enabled=self.debug_log_enabled_check.isChecked(),
             body_enabled=(
@@ -1611,7 +1867,7 @@ class SettingsDialog(QDialog):
         dialog = TTSBundleDownloadDialog(self.base_dir, self)
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.downloaded_work_dir is None:
             return
-        provider = getattr(dialog, "downloaded_provider", None) or TTS_PROVIDER_GPT_SOVITS
+        provider = TTS_PROVIDER_GPT_SOVITS
         provider_index = self.tts_provider_combo.findData(provider)
         if provider_index >= 0:
             self.tts_provider_combo.setCurrentIndex(provider_index)
@@ -1623,10 +1879,7 @@ class SettingsDialog(QDialog):
     def _sync_tts_provider_controls(self) -> None:
         provider = str(self.tts_provider_combo.currentData() or TTS_PROVIDER_GPT_SOVITS)
         self.tts_api_url_edit.setPlaceholderText(_default_tts_api_url(provider))
-        if provider == TTS_PROVIDER_GENIE:
-            self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/genie_tts_server/Genie-TTS Server")
-        else:
-            self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
+        self.tts_work_dir_edit.setPlaceholderText("data/tts_bundles/installed/gpt_sovits_nvidia50/GPT-SoVITS-v2pro-20250604-nvidia50")
 
     def _import_character_archive(self) -> None:
         if self._character_export_thread is not None:
@@ -1772,9 +2025,9 @@ class SettingsDialog(QDialog):
                 timeout_seconds=self.tts_timeout_spin.value(),
                 provider=provider,
                 work_dir=work_dir,
-                onnx_model_dir=_default_genie_onnx_dir(self.base_dir, selected_profile) if provider == TTS_PROVIDER_GENIE else None,
                 validate_enabled=False,
             )
+            settings = replace(settings, streaming_enabled=True)
         else:
             settings = GPTSoVITSTTSSettings(
                 enabled=enabled,
@@ -1787,14 +2040,10 @@ class SettingsDialog(QDialog):
                 sovits_model_path=self.tts_settings.sovits_model_path,
                 work_dir=work_dir,
                 character_name=self.tts_settings.character_name or "sakura",
-                onnx_model_dir=(
-                    self.tts_settings.onnx_model_dir or _default_genie_onnx_dir(self.base_dir, selected_profile)
-                    if provider == TTS_PROVIDER_GENIE
-                    else None
-                ),
                 ref_lang=ref_lang,
                 text_lang=text_lang,
                 timeout_seconds=self.tts_timeout_spin.value(),
+                streaming_enabled=True,
                 tone_references=self.tts_settings.tone_references,
             )
         if enabled:
@@ -1819,10 +2068,63 @@ class SettingsDialog(QDialog):
             return self.current_character
         return self.character_registry.get(character_id)
 
+    def _load_selected_character_card(self) -> None:
+        if not hasattr(self, "character_card_edit"):
+            return
+        profile = self._selected_character_profile()
+        if profile is None:
+            self.character_card_edit.clear()
+            self.character_card_edit.setEnabled(False)
+            if hasattr(self, "character_card_hint"):
+                self.character_card_hint.setEnabled(False)
+            return
+        self.character_card_edit.setEnabled(True)
+        if hasattr(self, "character_card_hint"):
+            self.character_card_hint.setEnabled(True)
+        try:
+            content = read_character_card(profile)
+        except CharacterConfigError as exc:
+            self.character_card_edit.setPlainText("")
+            self.character_card_edit.setEnabled(False)
+            if hasattr(self, "character_card_hint"):
+                self.character_card_hint.setText(str(exc))
+            return
+        self.character_card_edit.setPlainText(content)
+        if hasattr(self, "character_card_hint"):
+            palette = ui_theme_palette(
+                str(self.ui_theme_combo.currentData() or "")
+                if hasattr(self, "ui_theme_combo")
+                else None
+            )
+            self.character_card_hint.setStyleSheet(f"color: {palette.hint_text};")
+            self.character_card_hint.setText(
+                f"正在编辑：{profile.display_name}（{profile.card_path.name}）\n"
+                "人设会作为系统提示词影响回复风格。保存后立即作用于后续对话。"
+            )
+
+    def _save_selected_character_card(self) -> bool:
+        if not hasattr(self, "character_card_edit") or not self.character_card_edit.isEnabled():
+            return True
+        profile = self._selected_character_profile()
+        if profile is None:
+            return True
+        content = self.character_card_edit.toPlainText()
+        try:
+            write_character_card(profile, content)
+        except CharacterConfigError as exc:
+            QMessageBox.warning(self, "人设保存失败", str(exc))
+            return False
+        return True
+
     def _selected_portrait_scale_percent(self) -> int:
         if hasattr(self, "portrait_scale_spin"):
             return normalize_portrait_scale_percent(self.portrait_scale_spin.value())
         return self.portrait_scale_percent
+
+    def _selected_panel_width_percent(self) -> int:
+        if hasattr(self, "panel_width_spin"):
+            return normalize_panel_width_percent(self.panel_width_spin.value())
+        return self.pet_ui_settings.normalized().panel_width_percent
 
     def _refresh_character_combo(self, selected_character_id: str | None = None) -> None:
         if not hasattr(self, "character_combo"):
@@ -1848,6 +2150,7 @@ class SettingsDialog(QDialog):
             self.character_empty_label.setVisible(not has_character)
         self.character_combo.blockSignals(False)
         self._sync_character_archive_controls()
+        self._load_selected_character_card()
 
 
 def _is_http_url(url: str) -> bool:
@@ -1856,12 +2159,7 @@ def _is_http_url(url: str) -> bool:
 
 
 def _default_tts_api_url(provider: str) -> str:
-    return DEFAULT_GENIE_TTS_API_URL if provider == TTS_PROVIDER_GENIE else DEFAULT_GPT_SOVITS_API_URL
-
-
-def _default_genie_onnx_dir(base_dir: Path, profile: CharacterProfile | None) -> Path:
-    character_id = profile.id if profile is not None else "default"
-    return base_dir / "data" / "tts_bundles" / "onnx" / character_id
+    return DEFAULT_GPT_SOVITS_API_URL
 
 
 def _optional_path(value: str, base_dir: Path) -> Path | None:

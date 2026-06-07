@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from app.agent.memory_curator import MemoryCurationSettings
 from app.agent.mcp.settings import MCPRuntimeSettings
+from app.config.ai_settings import AiFeatureSettings
 from app.config.deskpet_settings import (
     PetUISettings,
     REMINDER_CHECK_INTERVAL_DEFAULT_SECONDS,
@@ -23,9 +24,18 @@ from app.agent.proactive_care import (
     PROACTIVE_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
     ProactiveCareSettings,
 )
+from app.platforms.napcat.settings import (
+    NAPCAT_REPLY_BOTH,
+    DEFAULT_NAPCAT_HISTORY_LIMIT,
+    DEFAULT_NAPCAT_HOST,
+    DEFAULT_NAPCAT_PATH,
+    DEFAULT_NAPCAT_PORT,
+    NapCatSettings,
+)
 from app.voice.stt_settings import (
     DEFAULT_WHISPER_LANGUAGE,
     DEFAULT_WHISPER_MODEL_NAME,
+    VOICE_CALL_SILENCE_SECONDS,
     STTSettings,
 )
 from app.voice.tts import (
@@ -131,6 +141,7 @@ class AppSettingsService:
         ref_lang = str(provider_data.get("ref_lang", gpt_sovits.get("ref_lang", "ja"))).strip()
         text_lang = str(provider_data.get("text_lang", gpt_sovits.get("text_lang", "ja"))).strip()
         timeout_seconds = _int_value(provider_data.get("timeout_seconds"), 60)
+        streaming_enabled = _bool_value(gpt_sovits.get("streaming_enabled"), False)
         onnx_model_dir = _optional_path(genie_tts.get("onnx_model_dir"), self.base_dir)
         if character_profile is not None:
             if provider == TTS_PROVIDER_GENIE and onnx_model_dir is None:
@@ -169,6 +180,8 @@ class AppSettingsService:
                 text_lang=text_lang,
                 timeout_seconds=timeout_seconds,
             )
+        if provider == TTS_PROVIDER_GPT_SOVITS:
+            settings = replace(settings, streaming_enabled=streaming_enabled)
         if settings.enabled and validate_enabled:
             settings.validate()
         return settings
@@ -197,6 +210,7 @@ class AppSettingsService:
                 "ref_lang": settings.ref_lang.strip(),
                 "text_lang": settings.text_lang.strip(),
                 "timeout_seconds": int(settings.timeout_seconds),
+                "streaming_enabled": bool(settings.streaming_enabled),
             }
         data["tts"] = tts_data
         save_yaml_mapping(self.api_config_path, data)
@@ -243,7 +257,13 @@ class AppSettingsService:
             music_plugin_enabled=_bool_value(ui.get("music_plugin_enabled"), True),
             music_default_source=str(ui.get("music_default_source", "netease")),
             lyric_sync_offset_seconds=float(ui.get("lyric_sync_offset_seconds", 1.2)),
-            music_sing_along_enabled=_bool_value(ui.get("music_sing_along_enabled"), True),
+            ui_theme=str(ui.get("ui_theme", "")),
+            desktop_pet_rules_enabled=_bool_value(ui.get("desktop_pet_rules_enabled"), False),
+            strict_ja_zh_correspondence_enabled=_bool_value(
+                ui.get("strict_ja_zh_correspondence_enabled"),
+                False,
+            ),
+            panel_width_percent=ui.get("panel_width_percent", 100),
         ).normalized()
 
     def save_pet_ui_settings(self, settings: PetUISettings) -> None:
@@ -257,7 +277,12 @@ class AppSettingsService:
                 "music_plugin_enabled": bool(normalized.music_plugin_enabled),
                 "music_default_source": normalized.music_default_source,
                 "lyric_sync_offset_seconds": normalized.lyric_sync_offset_seconds,
-                "music_sing_along_enabled": bool(normalized.music_sing_along_enabled),
+                "ui_theme": normalized.ui_theme,
+                "desktop_pet_rules_enabled": bool(normalized.desktop_pet_rules_enabled),
+                "strict_ja_zh_correspondence_enabled": bool(
+                    normalized.strict_ja_zh_correspondence_enabled
+                ),
+                "panel_width_percent": normalized.panel_width_percent,
             },
         )
 
@@ -313,6 +338,24 @@ class AppSettingsService:
             },
         )
 
+    def load_ai_feature_settings(self) -> AiFeatureSettings:
+        section = self._system_section("ai")
+        return AiFeatureSettings(
+            auto_session_summary_enabled=_bool_value(
+                section.get("auto_session_summary_enabled"),
+                True,
+            ),
+        ).normalized()
+
+    def save_ai_feature_settings(self, settings: AiFeatureSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "ai",
+            {
+                "auto_session_summary_enabled": bool(normalized.auto_session_summary_enabled),
+            },
+        )
+
     def load_debug_log_settings(self) -> DebugLogSettings:
         debug = self._system_section("debug")
         return DebugLogSettings(
@@ -328,6 +371,43 @@ class AppSettingsService:
                 "enabled": bool(settings.enabled),
                 "body_enabled": bool(settings.body_enabled),
                 "file_enabled": bool(settings.file_enabled),
+            },
+        )
+
+    def load_napcat_settings(self) -> NapCatSettings:
+        napcat = self._system_section("napcat")
+        return NapCatSettings(
+            enabled=_bool_value(napcat.get("enabled"), False),
+            host=str(napcat.get("host", DEFAULT_NAPCAT_HOST) or DEFAULT_NAPCAT_HOST),
+            port=_int_value(napcat.get("port"), DEFAULT_NAPCAT_PORT),
+            path=str(napcat.get("path", DEFAULT_NAPCAT_PATH) or DEFAULT_NAPCAT_PATH),
+            connect_host=str(napcat.get("connect_host", "") or ""),
+            token=str(napcat.get("token", "") or ""),
+            allow_private=_bool_value(napcat.get("allow_private"), True),
+            allow_group=_bool_value(napcat.get("allow_group"), False),
+            history_limit=_int_value(napcat.get("history_limit"), DEFAULT_NAPCAT_HISTORY_LIMIT),
+            busy_reply_text=str(
+                napcat.get("busy_reply_text", "") or "稍等一下，我还在回复上一条消息。"
+            ),
+            reply_mode=str(napcat.get("reply_mode", NAPCAT_REPLY_BOTH) or NAPCAT_REPLY_BOTH),
+        ).normalized()
+
+    def save_napcat_settings(self, settings: NapCatSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "napcat",
+            {
+                "enabled": bool(normalized.enabled),
+                "host": normalized.host,
+                "port": int(normalized.port),
+                "path": normalized.path,
+                "connect_host": normalized.connect_host,
+                "token": normalized.token,
+                "allow_private": bool(normalized.allow_private),
+                "allow_group": bool(normalized.allow_group),
+                "history_limit": int(normalized.history_limit),
+                "busy_reply_text": normalized.busy_reply_text,
+                "reply_mode": normalized.reply_mode,
             },
         )
 
@@ -406,11 +486,19 @@ class AppSettingsService:
                 input_device_index = int(device_raw)
             except (TypeError, ValueError):
                 input_device_index = None
+        try:
+            silence_seconds = float(data.get("voice_call_silence_seconds", VOICE_CALL_SILENCE_SECONDS))
+        except (TypeError, ValueError):
+            silence_seconds = VOICE_CALL_SILENCE_SECONDS
+        silence_seconds = max(0.35, min(2.0, silence_seconds))
         return STTSettings(
             enabled=_bool_value(data.get("enabled"), True),
             model_name=str(data.get("model_name", DEFAULT_WHISPER_MODEL_NAME)).strip() or DEFAULT_WHISPER_MODEL_NAME,
             language=str(data.get("language", DEFAULT_WHISPER_LANGUAGE)).strip() or DEFAULT_WHISPER_LANGUAGE,
             input_device_index=input_device_index,
+            voice_call_enabled=_bool_value(data.get("voice_call_enabled"), True),
+            voice_call_silence_seconds=silence_seconds,
+            voice_call_interrupt_tts=_bool_value(data.get("voice_call_interrupt_tts"), True),
         )
 
     def save_stt_settings(self, settings: STTSettings) -> None:
@@ -421,6 +509,9 @@ class AppSettingsService:
                 "model_name": settings.model_name.strip(),
                 "language": settings.language.strip(),
                 "input_device_index": settings.input_device_index,
+                "voice_call_enabled": bool(settings.voice_call_enabled),
+                "voice_call_silence_seconds": float(settings.voice_call_silence_seconds),
+                "voice_call_interrupt_tts": bool(settings.voice_call_interrupt_tts),
             },
         )
 

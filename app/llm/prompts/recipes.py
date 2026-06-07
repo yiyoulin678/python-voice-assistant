@@ -27,6 +27,7 @@ def build_segmented_reply_instruction(
     default_segments: str = "3-4",
     include_translation_rules: bool = True,
     include_no_single_segment_rule: bool = False,
+    strict_correspondence: bool = False,
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
     portraits = labels_or_default(reply_portraits, DEFAULT_REPLY_PORTRAITS)
@@ -49,12 +50,15 @@ def build_segmented_reply_instruction(
         format_text=SEGMENTED_REPLY_FORMAT,
         segment_rules="\n".join(rules),
         include_translation_rules=include_translation_rules,
+        strict_correspondence=strict_correspondence,
     )
 
 
 def build_agent_reply_protocol(
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None = None,
+    *,
+    strict_correspondence: bool = False,
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
     portraits = labels_or_default(reply_portraits, DEFAULT_REPLY_PORTRAITS)
@@ -73,6 +77,7 @@ def build_agent_reply_protocol(
         format_text=AGENT_REPLY_FORMAT,
         segment_rules=segment_rules,
         include_translation_rules=True,
+        strict_correspondence=strict_correspondence,
     )
 
 
@@ -82,6 +87,7 @@ def build_event_reply_protocol(
     *,
     example_tone: str = "请求",
     segment_rules: str = "",
+    strict_correspondence: bool = False,
 ) -> str:
     tones = labels_or_default(reply_tones, DEFAULT_REPLY_TONES)
     portraits = labels_or_default(reply_portraits, DEFAULT_REPLY_PORTRAITS)
@@ -94,12 +100,15 @@ def build_event_reply_protocol(
         format_text=format_text,
         segment_rules=segment_rules,
         include_translation_rules=True,
+        strict_correspondence=strict_correspondence,
     )
 
 
 def build_proactive_check_reply_protocol(
     reply_tones: list[str] | None,
     reply_portraits: list[str] | None = None,
+    *,
+    strict_correspondence: bool = False,
 ) -> str:
     """构建主动屏幕检查事件专用回复协议。"""
 
@@ -108,6 +117,7 @@ def build_proactive_check_reply_protocol(
         reply_portraits,
         example_tone="中性",
         segment_rules=build_proactive_check_segment_rules(),
+        strict_correspondence=strict_correspondence,
     )
 
 
@@ -194,6 +204,7 @@ def build_event_system_prompt(
     reply_portraits: list[str] | None,
     *,
     event_type: str = "reminder_due",
+    strict_correspondence: bool = False,
 ) -> str:
     """构建主动事件直接回复路径使用的系统提示词。"""
 
@@ -206,7 +217,11 @@ def build_event_system_prompt(
             [
                 PromptBlock(
                     None,
-                    build_proactive_check_reply_protocol(reply_tones, reply_portraits),
+                    build_proactive_check_reply_protocol(
+                        reply_tones,
+                        reply_portraits,
+                        strict_correspondence=strict_correspondence,
+                    ),
                 ),
                 PromptBlock(None, "- 不要提及内部事件类型、JSON 或工具实现。"),
                 proactive_reply_decision_flow_block(),
@@ -224,6 +239,7 @@ def build_event_system_prompt(
                         reply_tones,
                         reply_portraits,
                         example_tone="请求",
+                        strict_correspondence=strict_correspondence,
                     ),
                 ),
                 PromptBlock(None, "- 不要提及内部事件类型、JSON 或工具实现。"),

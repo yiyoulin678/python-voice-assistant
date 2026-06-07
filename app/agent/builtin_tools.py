@@ -7,24 +7,27 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.desktop_tools import NotesStore, open_local_folder, open_url
+from app.agent.mcp.web_search_server import fetch_url as fetch_public_url
+from app.agent.mcp.web_search_server import search_web
 from app.media.music import media_next_track, media_play_pause, media_previous_track, open_music_search
 from app.agent.memory import MemoryStore
 from app.agent.reminders import ReminderStore
 from app.agent.screen_tools import create_screen_observation_tool
 from app.agent.tool_registry import Tool, ToolRegistry
+from app.rag.knowledge_base import KnowledgeBase
 
 
 def create_builtin_tool_registry(
     base_dir: Path,
     memory: MemoryStore | None = None,
     reminders: ReminderStore | None = None,
+    knowledge_base: KnowledgeBase | None = None,
 ) -> ToolRegistry:
     store = TodoStore(base_dir / "data" / "tasks.json")
     notes = NotesStore(base_dir / "data" / "notes")
     memory = memory or MemoryStore(base_dir / "data" / "memory.json")
     reminders = reminders or ReminderStore(base_dir / "data" / "reminders.json")
-    registry = ToolRegistry(
-        [
+    tools: list[Tool] = [
             create_screen_observation_tool(),
             Tool(
                 name="get_current_time",
@@ -200,6 +203,49 @@ def create_builtin_tool_registry(
                 handler=open_music_search,
             ),
             Tool(
+                name="web_search",
+                description=(
+                    "轻量搜索公开网页，返回标题、链接和摘要。"
+                    "适合查询最新新闻、公开资料、百科入口；不需要打开浏览器。"
+                    "本地课设/项目文档请改用 knowledge_search。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "搜索关键词或自然语言问题。"},
+                        "max_results": {
+                            "type": "integer",
+                            "description": "最多返回条数，默认 5，最大 10。",
+                        },
+                    },
+                    "required": ["query"],
+                },
+                handler=_builtin_web_search,
+                group="web",
+                risk="low",
+            ),
+            Tool(
+                name="fetch_url",
+                description=(
+                    "读取公开 http/https 网页正文，抽取标题和文本。"
+                    "适合在 web_search 后深入阅读某个结果；不支持本机或内网地址。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "要读取的公开网页 URL。"},
+                        "max_chars": {
+                            "type": "integer",
+                            "description": "正文最多返回字符数，默认 6000，范围 500-20000。",
+                        },
+                    },
+                    "required": ["url"],
+                },
+                handler=_builtin_fetch_url,
+                group="web",
+                risk="low",
+            ),
+            Tool(
                 name="memory_search",
                 description=(
                     "搜索 Mutsuki 的长期记忆。需要跨会话信息、用户偏好、项目状态或过往约定时使用。"
@@ -244,8 +290,28 @@ def create_builtin_tool_registry(
                 handler=lambda arguments: memory.forget_memory(_memory_forget_arguments(arguments), wait=False),
                 group="memory",
             ),
-        ]
-    )
+    ]
+    if knowledge_base is not None:
+        tools.append(
+            Tool(
+                name="knowledge_search",
+                description=(
+                    "搜索本地文档知识库（data/knowledge/ 下的 txt/md）。"
+                    "当用户询问课设要求、项目说明、角色设定文档等已入库资料时使用。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索关键词或自然语言问题。"},
+                        "limit": {"type": "integer", "description": "最多返回条数，默认 5。"},
+                    },
+                    "required": ["query"],
+                },
+                handler=lambda arguments: _knowledge_search(knowledge_base, arguments),
+                group="knowledge",
+            )
+        )
+    registry = ToolRegistry(tools)
     registry.register(
         Tool(
             name="search_tools",
@@ -289,6 +355,63 @@ def get_current_time() -> dict[str, str]:
 def _memory_forget_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     memory_id = arguments.get("memory_id") or arguments.get("id")
     return {"id": memory_id}
+
+
+def _builtin_web_search(arguments: dict[str, Any]) -> dict[str, Any]:
+    query = _required_text(arguments, "query")
+    max_results = _parse_bounded_int(
+        arguments.get("max_results"),
+        default=5,
+        minimum=1,
+        maximum=10,
+    )
+    return search_web(query, max_results=max_results)
+
+
+def _builtin_fetch_url(arguments: dict[str, Any]) -> dict[str, Any]:
+    url = _required_text(arguments, "url")
+    max_chars = _parse_bounded_int(
+        arguments.get("max_chars"),
+        default=6000,
+        minimum=500,
+        maximum=20000,
+    )
+    return fetch_public_url(url, max_chars=max_chars)
+
+
+def _parse_bounded_int(
+    value: Any,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("数值参数必须是整数。")
+    parsed = int(value)
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"数值参数必须在 {minimum}-{maximum} 之间。")
+    return parsed
+
+
+def _knowledge_search(knowledge_base: KnowledgeBase, arguments: dict[str, Any]) -> dict[str, Any]:
+    query = _required_text(arguments, "query")
+    limit = arguments.get("limit")
+    parsed_limit = 5
+    if isinstance(limit, int) and limit > 0:
+        parsed_limit = min(limit, 20)
+    elif isinstance(limit, float) and limit > 0:
+        parsed_limit = min(int(limit), 20)
+    knowledge_base.reload()
+    results = knowledge_base.search(query, limit=parsed_limit)
+    return {
+        "query": query,
+        "count": len(results),
+        "sources": knowledge_base.list_sources(),
+        "results": [item.to_dict() for item in results],
+    }
 
 
 class TodoStore:
