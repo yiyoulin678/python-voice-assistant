@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -22,6 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.ai.stats import format_event_brief, format_event_time, load_ai_events, summarize_ai_events
+from app.ui.ai_metrics_charts import AiMetricsChartsWidget
+from app.config.ai_settings import AiFeatureSettings
 from app.platform.open_folder import open_folder_in_file_manager
 from app.rag.knowledge_base import KnowledgeBase
 
@@ -32,9 +35,15 @@ _EVENTS_TABLE_MAX_HEIGHT = 180
 class AiSettingsPanel(QWidget):
     """设置页中的 AI 知识库与运行指标可视化。"""
 
-    def __init__(self, base_dir: Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        ai_settings: AiFeatureSettings | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.base_dir = base_dir.resolve()
+        self._ai_settings = (ai_settings or AiFeatureSettings()).normalized()
         self.knowledge_base = KnowledgeBase(self.base_dir)
         self.events_path = self.base_dir / "data" / "metrics" / "ai_events.jsonl"
         self._ready = False
@@ -47,20 +56,30 @@ class AiSettingsPanel(QWidget):
         header = QWidget(self)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(16, 12, 16, 0)
-        hint = QLabel("把说明文档放进知识库目录；对话后可在运行指标页查看统计。", header)
+        hint = QLabel("知识库放说明文档；对话结束后可自动写纪要到 data/notes/", header)
         hint.setWordWrap(True)
         header_layout.addWidget(hint, 1)
+        self.auto_session_summary_check = QCheckBox("对话结束后自动写纪要", header)
+        self.auto_session_summary_check.setChecked(
+            self._ai_settings.auto_session_summary_enabled
+        )
+        header_layout.addWidget(self.auto_session_summary_check)
         self.open_knowledge_dir_button = QPushButton("打开知识库", header)
         self.open_knowledge_dir_button.clicked.connect(self._open_knowledge_dir)
         self.open_metrics_dir_button = QPushButton("打开指标目录", header)
         self.open_metrics_dir_button.clicked.connect(self._open_metrics_dir)
+        self.open_summary_notes_button = QPushButton("打开纪要笔记", header)
+        self.open_summary_notes_button.clicked.connect(self._open_summary_notes_dir)
         header_layout.addWidget(self.open_knowledge_dir_button)
         header_layout.addWidget(self.open_metrics_dir_button)
+        header_layout.addWidget(self.open_summary_notes_button)
         outer.addWidget(header)
 
         self._sub_tabs = QTabWidget(self)
         self._sub_tabs.addTab(self._build_knowledge_page(), "知识库")
         self._sub_tabs.addTab(self._build_metrics_page(), "运行指标")
+        self._charts_widget = AiMetricsChartsWidget(self.events_path, self)
+        self._sub_tabs.addTab(wrap_page_scroll(self._charts_widget), "统计图")
         outer.addWidget(self._sub_tabs, 1)
 
         self._placeholder_label = QLabel("切换到本页后将自动加载数据。", self)
@@ -89,6 +108,18 @@ class AiSettingsPanel(QWidget):
             title="打开日志文件夹",
         )
 
+    def _open_summary_notes_dir(self) -> None:
+        self._open_data_dir(
+            self.base_dir / "data" / "notes",
+            create=True,
+            title="打开纪要笔记文件夹",
+        )
+
+    def collect_ai_feature_settings(self) -> AiFeatureSettings:
+        return AiFeatureSettings(
+            auto_session_summary_enabled=self.auto_session_summary_check.isChecked(),
+        ).normalized()
+
     def _open_data_dir(self, path: Path, *, create: bool, title: str) -> None:
         try:
             opened_path = open_folder_in_file_manager(path, create=create)
@@ -103,6 +134,7 @@ class AiSettingsPanel(QWidget):
             self._ready = True
         self.refresh_knowledge(rebuild_index=False)
         self.refresh_metrics()
+        self._charts_widget.refresh()
         self._placeholder_label.setText("数据已更新。检索较慢时请先点「重建索引」。")
 
     def _build_knowledge_page(self) -> QWidget:

@@ -823,6 +823,7 @@ class AgentRuntime:
 - 屏幕：理解当前画面用 observe_screen（仅启用时可用）。
 - 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。
 - 提醒与记忆：add_reminder、memory_search、memory_remember、memory_forget
+- 公开网页：web_search、fetch_url（轻量搜索/读页，无需浏览器）
 - 文档知识库：knowledge_search（检索 data/knowledge/ 下的说明文档）
 
 工具要求：
@@ -841,6 +842,7 @@ class AgentRuntime:
 - 用户说“几分钟后/几秒后/一会儿后”等相对提醒时，add_reminder 必须使用 delay_minutes 或 delay_seconds，不要自己换算 trigger_at。
 - 只有用户给出明确日期或钟点时，add_reminder 才使用 trigger_at。
 - 需要跨会话信息、用户偏好或项目状态时，优先使用 memory_search。
+- 需要最新公开信息、新闻、百科或网页资料时，优先使用 web_search；摘要不够时再 fetch_url。
 - 需要课设要求、项目说明等已入库文档时，优先使用 knowledge_search。
 - 只有用户明确要求记住，或信息明显长期有用且不包含敏感凭据时，才使用 memory_remember。
 - 只有用户明确要求忘掉信息时，才使用 memory_forget。
@@ -1575,7 +1577,7 @@ def _build_web_tool_capability_rule(visible_browser_mode: bool) -> str:
             "- 网页：本轮是显式可见浏览器任务，使用 playwright_*；"
             "后台 web__ 搜索/抓取只用于非可见浏览器的轻量公开资料。"
         )
-    return "- 网页：轻量公开资料用 web__web_search / web__fetch_url；可见浏览器操作用 playwright_*。"
+    return "- 网页：轻量公开资料用 web_search / fetch_url；可见浏览器操作用 playwright_*。"
 
 
 def _build_screen_and_desktop_routing_rule(allow_screen_observation: bool) -> str:

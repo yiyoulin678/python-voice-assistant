@@ -33,6 +33,8 @@ data/notes/
 data/tts_bundles/
 data/models/
 data/recordings/
+data/chat_audio/
+data/metrics/
 data/config/api.yaml
 data/config/characters.yaml
 data/config/system_config.yaml

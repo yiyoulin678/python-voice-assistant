@@ -50,6 +50,11 @@ from app.agent import (
     AgentResult,
     PendingToolAction,
 )
+from app.ai.session_summary import (
+    SessionTurn,
+    session_summary_note_path,
+    should_summarize_turn,
+)
 from app.agent.memory_curator import (
     MemoryCurationResult,
 )
@@ -98,6 +103,7 @@ from app.agent.screen_observation import (
     build_screen_observation_user_message,
     capture_screen_observation,
 )
+from app.ui.session_summary_worker import SessionSummaryWorker
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.win_click_through import (
     apply_locked_mouse_transparency,
@@ -228,6 +234,12 @@ class PetWindow(QWidget):
         self.memory_curation_settings = context.memory_curation_settings
         self.memory_curation_state = context.memory_curation_state
         self.memory_curator = context.memory_curator
+        ai_feature_settings = self.settings_service.load_ai_feature_settings()
+        self.auto_session_summary_enabled = ai_feature_settings.auto_session_summary_enabled
+        self._last_user_message_text = ""
+        self._pending_summary_turn: SessionTurn | None = None
+        self._summary_thread: QThread | None = None
+        self._summary_worker: SessionSummaryWorker | None = None
         pet_ui_settings = self.settings_service.load_pet_ui_settings()
         self.hover_only_ui_enabled = pet_ui_settings.hover_only_ui
         self.subtitle_language = pet_ui_settings.subtitle_language
@@ -773,12 +785,68 @@ class PetWindow(QWidget):
     def _finish_reply_interaction(self) -> None:
         self._pending_napcat_voice_message = None
         self._end_live2d_speech()
+        self._maybe_queue_session_summary()
         self._end_interaction("reply_completed")
 
     def _on_reply_segment_completed(self, segment: ChatSegment) -> None:
         self._forward_segment_voice_to_qq(segment)
         self._record_assistant_segment_note(segment)
         self._archive_segment_audio_to_history(segment)
+
+    def _maybe_queue_session_summary(self) -> None:
+        if not self.auto_session_summary_enabled:
+            self._pending_summary_turn = None
+            return
+        if self._summary_thread is not None:
+            return
+        turn = self._pending_summary_turn
+        self._pending_summary_turn = None
+        if turn is None or not should_summarize_turn(turn):
+            return
+
+        note_path = session_summary_note_path(
+            self.base_dir / "data" / "notes",
+            self.character_profile.id,
+        )
+        worker = SessionSummaryWorker(self.api_client, turn, note_path)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._on_session_summary_succeeded)
+        worker.failed.connect(self._on_session_summary_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_session_summary_thread)
+        thread.finished.connect(thread.deleteLater)
+        self._summary_worker = worker
+        self._summary_thread = thread
+        thread.start()
+        debug_log(
+            "PetWindow",
+            "已排队自动生成会话纪要",
+            {"note_path": str(note_path)},
+        )
+
+    @Slot(str)
+    def _on_session_summary_succeeded(self, summary: str) -> None:
+        metrics = getattr(self.agent_runtime, "metrics", None)
+        if metrics is not None:
+            metrics.record(
+                "session_summary_completed",
+                {"preview": summary[:240], "character_id": self.character_profile.id},
+            )
+        debug_log("PetWindow", "会话纪要已写入", {"preview": summary[:120]})
+
+    @Slot(str)
+    def _on_session_summary_failed(self, error: str) -> None:
+        debug_log("PetWindow", "会话纪要生成失败", {"error": error})
+
+    def _clear_session_summary_thread(self) -> None:
+        self._summary_thread = None
+        self._summary_worker = None
+
+    def _apply_ai_feature_settings(self, settings) -> None:  # noqa: ANN001
+        self.auto_session_summary_enabled = bool(settings.auto_session_summary_enabled)
 
     def _record_assistant_segment_note(self, segment: ChatSegment) -> None:
         text = segment.display_text(self.subtitle_language).strip()
@@ -1931,6 +1999,10 @@ class PetWindow(QWidget):
         self._pending_napcat_message = None
         self._outbound_napcat_target = None
         self.messages.append({"role": "assistant", "content": reply.text})
+        self._pending_summary_turn = SessionTurn(
+            user_text=self._last_user_message_text,
+            assistant_text=reply.text,
+        )
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
         self._show_reply_segments(reply.segments)
@@ -2118,6 +2190,7 @@ class PetWindow(QWidget):
         return True
 
     def _record_user_message(self, text: str) -> None:
+        self._last_user_message_text = text.strip()
         self.messages.append({"role": "user", "content": text})
         self._record_history("user", text)
 
@@ -3425,6 +3498,10 @@ class PetWindow(QWidget):
             self.settings_service.save_memory_curation_settings(
                 dialog.result_memory_curation_settings
             )
+            if dialog.result_ai_feature_settings is not None:
+                self.settings_service.save_ai_feature_settings(
+                    dialog.result_ai_feature_settings
+                )
             if dialog.result_napcat_settings is not None:
                 self.settings_service.save_napcat_settings(dialog.result_napcat_settings)
             self._save_system_config_values(
@@ -3464,6 +3541,8 @@ class PetWindow(QWidget):
             self._apply_screen_observation_settings(dialog.result_screen_observation_settings)
             self._apply_reminder_settings(dialog.result_reminder_settings)
             self.memory_curation_settings = dialog.result_memory_curation_settings
+            if dialog.result_ai_feature_settings is not None:
+                self._apply_ai_feature_settings(dialog.result_ai_feature_settings)
             self.debug_log_settings = dialog.result_debug_log_settings
             self.stt_settings = dialog.result_stt_settings
             self._sync_proactive_care_timer()
@@ -3487,6 +3566,8 @@ class PetWindow(QWidget):
         self._apply_screen_observation_settings(dialog.result_screen_observation_settings)
         self._apply_reminder_settings(dialog.result_reminder_settings)
         self.memory_curation_settings = dialog.result_memory_curation_settings
+        if dialog.result_ai_feature_settings is not None:
+            self._apply_ai_feature_settings(dialog.result_ai_feature_settings)
         self.debug_log_settings = dialog.result_debug_log_settings
         self.stt_settings = dialog.result_stt_settings
         try:

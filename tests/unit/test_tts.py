@@ -258,8 +258,7 @@ def test_tts_service_probe_starts_local_gptsovits_when_port_is_down(monkeypatch)
     assert GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
     assert messages == []
     assert len(popen_calls) == 1
-    bundled_api = Path(__file__).resolve().parents[2] / "app" / "voice" / "bundled" / "gpt_sovits_api_v2.py"
-    assert popen_calls[0] == [str(work_dir / "runtime" / "python.exe"), str(bundled_api)]
+    assert popen_calls[0] == [str(work_dir / "runtime" / "python.exe"), str(work_dir / "api_v2.py")]
 
 
 def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]

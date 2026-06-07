@@ -5,7 +5,6 @@
 - ToolRegistry 注册 / 查询 / 描述 / 执行
 - ToolPermissionPolicy 确认策略
 - search_tools / active_groups / capability filtering
-- BuiltinToolProvider
 """
 
 from __future__ import annotations

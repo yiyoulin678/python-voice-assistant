@@ -6,6 +6,7 @@ from typing import Any
 
 from app.agent.memory_curator import MemoryCurationSettings
 from app.agent.mcp.settings import MCPRuntimeSettings
+from app.config.ai_settings import AiFeatureSettings
 from app.config.deskpet_settings import (
     PetUISettings,
     REMINDER_CHECK_INTERVAL_DEFAULT_SECONDS,
@@ -334,6 +335,24 @@ class AppSettingsService:
                 "enabled": bool(settings.enabled),
                 "trigger_turns": int(settings.trigger_turns),
                 "backfill_limit": int(settings.backfill_limit),
+            },
+        )
+
+    def load_ai_feature_settings(self) -> AiFeatureSettings:
+        section = self._system_section("ai")
+        return AiFeatureSettings(
+            auto_session_summary_enabled=_bool_value(
+                section.get("auto_session_summary_enabled"),
+                True,
+            ),
+        ).normalized()
+
+    def save_ai_feature_settings(self, settings: AiFeatureSettings) -> None:
+        normalized = settings.normalized()
+        self.save_system_values(
+            "ai",
+            {
+                "auto_session_summary_enabled": bool(normalized.auto_session_summary_enabled),
             },
         )
 

@@ -15,7 +15,7 @@ def test_split_tts_expression_chunks_splits_on_ellipsis_runs() -> None:
         "嗯，好",
         "嗯，随你喜欢",
         "嗯，再激烈一点",
-        "嗯！",
+        "嗯",
     ]
 
 

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.agent.memory import MemoryStore
+from app.config.ai_settings import AiFeatureSettings
 from app.agent.mcp import MCPRuntimeSettings
 from app.config.character_archive import (
     CharacterArchiveError,
@@ -231,6 +232,7 @@ class SettingsDialog(QDialog):
         self.memory_curation_settings = (
             memory_curation_settings or settings_service.load_memory_curation_settings()
         )
+        self.ai_feature_settings = settings_service.load_ai_feature_settings()
         self.napcat_settings = (
             napcat_settings or settings_service.load_napcat_settings()
         ).normalized()
@@ -272,6 +274,7 @@ class SettingsDialog(QDialog):
         self.result_screen_observation_settings: ScreenObservationSettings | None = None
         self.result_reminder_settings: ReminderSettings | None = None
         self.result_memory_curation_settings: MemoryCurationSettings | None = None
+        self.result_ai_feature_settings: AiFeatureSettings | None = None
         self.result_napcat_settings: NapCatSettings | None = None
         self._api_test_thread: QThread | None = None
         self._api_test_worker: ApiConnectionTestWorker | None = None
@@ -1122,7 +1125,7 @@ class SettingsDialog(QDialog):
         if self._ai_tab_index is None or index != self._ai_tab_index:
             return
         if not self._ai_panel_loaded:
-            panel = AiSettingsPanel(self.base_dir, self)
+            panel = AiSettingsPanel(self.base_dir, self.ai_feature_settings, self)
             self.ai_settings_panel = panel
             self._settings_tabs.removeTab(self._ai_tab_index)
             self._ai_tab_index = self._settings_tabs.insertTab(self._ai_tab_index, panel, "AI")
@@ -1754,6 +1757,10 @@ class SettingsDialog(QDialog):
             trigger_turns=self.memory_curation_trigger_spin.value(),
             backfill_limit=self.memory_curation_backfill_spin.value(),
         )
+        if self._ai_panel_loaded and hasattr(self, "ai_settings_panel"):
+            self.result_ai_feature_settings = self.ai_settings_panel.collect_ai_feature_settings()
+        else:
+            self.result_ai_feature_settings = self.ai_feature_settings
         self.result_mcp_settings = MCPRuntimeSettings(
             windows_enabled=self.windows_mcp_enabled_check.isChecked(),
             playwright_enabled=self.playwright_mcp_enabled_check.isChecked(),
