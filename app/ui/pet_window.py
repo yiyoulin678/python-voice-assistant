@@ -99,7 +99,10 @@ from app.agent.screen_observation import (
     capture_screen_observation,
 )
 from app.ui.settings_dialog import SettingsDialog
-from app.ui.win_click_through import apply_locked_mouse_transparency, apply_locked_window_region
+from app.ui.win_click_through import (
+    apply_locked_mouse_transparency,
+    refresh_window_hit_region,
+)
 from app.live2d.runtime import ensure_live2d_init, is_live2d_available, live2d_import_error
 from app.config.character_loader import CharacterExpressionPreset
 from app.ui.live2d_expression_presets import (
@@ -182,7 +185,7 @@ REPLY_HISTORY_PANEL_HEIGHT = 58
 REPLY_HISTORY_BUTTON_SIZE = 26
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
-DEFAULT_STAGE_WIDTH = 780
+DEFAULT_STAGE_WIDTH = 720
 DEFAULT_STAGE_HEIGHT = 800
 BUBBLE_MAX_WIDTH = 360
 BUBBLE_SIDE_MARGIN = 56
@@ -579,13 +582,6 @@ class PetWindow(QWidget):
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         self._layout_stage()
-        if self._is_ui_locked():
-            apply_locked_window_region(self, True)
-
-    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        super().showEvent(event)
-        if self._is_ui_locked():
-            apply_locked_window_region(self, True)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
         if isinstance(event, QMouseEvent) and self._using_live2d:
@@ -1094,10 +1090,11 @@ class PetWindow(QWidget):
     def _apply_mouse_passthrough(self, locked: bool) -> None:
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         apply_locked_mouse_transparency(self, locked)
-        apply_locked_window_region(self, locked)
-        if locked:
-            QTimer.singleShot(0, lambda: apply_locked_window_region(self, True))
-            QTimer.singleShot(100, lambda: apply_locked_window_region(self, True))
+        self._refresh_window_hit_region()
+
+    def _refresh_window_hit_region(self) -> None:
+        refresh_window_hit_region(self)
+        QTimer.singleShot(0, lambda: refresh_window_hit_region(self))
 
     def _toggle_ui_locked(self, checked: bool) -> None:
         self._set_ui_locked(checked)
@@ -1229,6 +1226,7 @@ class PetWindow(QWidget):
             ctrl.input_overlay.raise_()
 
         if not controls_visible:
+            self._refresh_window_hit_region()
             return
 
         bubble_width = _bubble_layout_width(width, self.panel_width_percent)
@@ -1247,6 +1245,7 @@ class PetWindow(QWidget):
         self.input_bar.setGeometry(QRect(bubble_x, input_y, bubble_width, INPUT_BAR_HEIGHT))
         self._update_input_backdrop_geometry()
         self.input_bar.raise_()
+        self._refresh_window_hit_region()
 
     def _update_input_backdrop_geometry(self) -> None:
         self.input_bar.layout().activate()
@@ -4070,6 +4069,7 @@ class PetWindow(QWidget):
         self._apply_panel_layout()
         if self.stage_size != previous_size:
             self._move_to_default_position()
+        self._refresh_window_hit_region()
 
     def _apply_panel_layout(self) -> None:
         self.stage_size = _stage_size_for_layout(
