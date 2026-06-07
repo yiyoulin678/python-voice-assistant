@@ -132,6 +132,14 @@ class KnowledgeBase:
         sources = sorted({chunk.source for chunk in self._chunks})
         return sources
 
+    def source_chunk_counts(self) -> dict[str, int]:
+        if not self._chunks:
+            self.reload()
+        counts: dict[str, int] = {}
+        for chunk in self._chunks:
+            counts[chunk.source] = counts.get(chunk.source, 0) + 1
+        return counts
+
     def _directory_mtime(self) -> float:
         if not self.knowledge_dir.exists():
             return 0.0

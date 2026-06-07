@@ -120,6 +120,7 @@ from app.platforms.napcat.settings import (
     NAPCAT_REPLY_VOICE_ONLY,
     NapCatSettings,
 )
+from app.ui.ai_settings_panel import AiSettingsPanel
 from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
 from sdk.types import ToolsTabContribution
 
@@ -306,6 +307,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
+        tabs.addTab(self._build_ai_tab(), "AI")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
@@ -1106,6 +1108,10 @@ class SettingsDialog(QDialog):
         self.proactive_check_interval_spin.setEnabled(controls_enabled)
         self.proactive_cooldown_spin.setEnabled(controls_enabled)
         self.proactive_batch_limit_spin.setEnabled(screen_enabled)
+
+    def _build_ai_tab(self) -> QWidget:
+        self.ai_settings_panel = AiSettingsPanel(self.base_dir, self)
+        return self.ai_settings_panel
 
     def _build_memory_tab(self, memory_store: MemoryStore) -> QWidget:
         tab = QWidget(self)
