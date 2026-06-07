@@ -263,6 +263,7 @@ class AppSettingsService:
                 ui.get("strict_ja_zh_correspondence_enabled"),
                 False,
             ),
+            panel_width_percent=ui.get("panel_width_percent", 100),
         ).normalized()
 
     def save_pet_ui_settings(self, settings: PetUISettings) -> None:
@@ -282,6 +283,7 @@ class AppSettingsService:
                 "strict_ja_zh_correspondence_enabled": bool(
                     normalized.strict_ja_zh_correspondence_enabled
                 ),
+                "panel_width_percent": normalized.panel_width_percent,
             },
         )
 

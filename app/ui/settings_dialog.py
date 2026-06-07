@@ -47,6 +47,8 @@ from app.agent.memory_curator import (
     MemoryCurationSettings,
 )
 from app.config.deskpet_settings import (
+    PANEL_WIDTH_PERCENT_MAX,
+    PANEL_WIDTH_PERCENT_MIN,
     REMINDER_CHECK_INTERVAL_DEFAULT_SECONDS,
     REMINDER_CHECK_INTERVAL_MAX_SECONDS,
     REMINDER_CHECK_INTERVAL_MIN_SECONDS,
@@ -55,6 +57,7 @@ from app.config.deskpet_settings import (
     ScreenObservationSettings,
     SUBTITLE_LANGUAGE_JA,
     SUBTITLE_LANGUAGE_ZH,
+    normalize_panel_width_percent,
 )
 from app.config.settings_service import AppSettingsService, DebugLogSettings
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
@@ -453,6 +456,7 @@ class SettingsDialog(QDialog):
         form_layout.setContentsMargins(16, 18, 16, 16)
         form_layout.setSpacing(12)
         form_layout.addRow("", self.hover_only_ui_check)
+        form_layout.addRow("面板宽度", self._build_panel_width_control(tab))
         form_layout.addRow("界面主题", self.ui_theme_combo)
         form_layout.addRow("字幕语言", self.subtitle_language_combo)
         form_layout.addRow("", self.strict_ja_zh_correspondence_check)
@@ -504,6 +508,45 @@ class SettingsDialog(QDialog):
         container.setLayout(layout)
         return container
 
+    def _build_panel_width_control(self, parent: QWidget) -> QWidget:
+        container = QWidget(parent)
+        normalized_ui = self.pet_ui_settings.normalized()
+        panel_width_percent = normalized_ui.panel_width_percent
+
+        self.panel_width_slider = QSlider(Qt.Orientation.Horizontal, container)
+        self.panel_width_slider.setRange(
+            PANEL_WIDTH_PERCENT_MIN,
+            PANEL_WIDTH_PERCENT_MAX,
+        )
+        self.panel_width_slider.setSingleStep(5)
+        self.panel_width_slider.setPageStep(25)
+        self.panel_width_slider.setTickInterval(50)
+        self.panel_width_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.panel_width_slider.setValue(panel_width_percent)
+
+        self.panel_width_spin = QSpinBox(container)
+        self.panel_width_spin.setRange(
+            PANEL_WIDTH_PERCENT_MIN,
+            PANEL_WIDTH_PERCENT_MAX,
+        )
+        self.panel_width_spin.setSingleStep(5)
+        self.panel_width_spin.setSuffix("%")
+        self.panel_width_spin.setValue(panel_width_percent)
+        self.panel_width_spin.setToolTip(
+            "调整气泡与输入栏整体宽度（20%–500%）。100% 为默认宽度。"
+        )
+
+        self.panel_width_slider.valueChanged.connect(self.panel_width_spin.setValue)
+        self.panel_width_spin.valueChanged.connect(self.panel_width_slider.setValue)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(self.panel_width_slider, 1)
+        layout.addWidget(self.panel_width_spin)
+        container.setLayout(layout)
+        return container
+
     def _build_portrait_scale_control(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
         self.portrait_scale_slider = QSlider(Qt.Orientation.Horizontal, container)
@@ -512,8 +555,8 @@ class SettingsDialog(QDialog):
             PORTRAIT_SCALE_MAX_PERCENT,
         )
         self.portrait_scale_slider.setSingleStep(5)
-        self.portrait_scale_slider.setPageStep(10)
-        self.portrait_scale_slider.setTickInterval(25)
+        self.portrait_scale_slider.setPageStep(25)
+        self.portrait_scale_slider.setTickInterval(50)
         self.portrait_scale_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.portrait_scale_slider.setValue(self.portrait_scale_percent)
 
@@ -525,6 +568,9 @@ class SettingsDialog(QDialog):
         self.portrait_scale_spin.setSingleStep(5)
         self.portrait_scale_spin.setSuffix("%")
         self.portrait_scale_spin.setValue(self.portrait_scale_percent)
+        self.portrait_scale_spin.setToolTip(
+            "调整立绘显示大小（20%–500%）。100% 为原始尺寸。"
+        )
 
         self.portrait_scale_slider.valueChanged.connect(self.portrait_scale_spin.setValue)
         self.portrait_scale_spin.valueChanged.connect(self.portrait_scale_slider.setValue)
@@ -1667,6 +1713,7 @@ class SettingsDialog(QDialog):
             ui_theme=str(self.ui_theme_combo.currentData() or ""),
             desktop_pet_rules_enabled=self.desktop_pet_rules_check.isChecked(),
             strict_ja_zh_correspondence_enabled=self.strict_ja_zh_correspondence_check.isChecked(),
+            panel_width_percent=self._selected_panel_width_percent(),
         ).normalized()
         self.result_screen_observation_settings = ScreenObservationSettings(
             enabled=self.screen_observation_enabled_check.isChecked(),
@@ -2031,6 +2078,11 @@ class SettingsDialog(QDialog):
         if hasattr(self, "portrait_scale_spin"):
             return normalize_portrait_scale_percent(self.portrait_scale_spin.value())
         return self.portrait_scale_percent
+
+    def _selected_panel_width_percent(self) -> int:
+        if hasattr(self, "panel_width_spin"):
+            return normalize_panel_width_percent(self.panel_width_spin.value())
+        return self.pet_ui_settings.normalized().panel_width_percent
 
     def _refresh_character_combo(self, selected_character_id: str | None = None) -> None:
         if not hasattr(self, "character_combo"):

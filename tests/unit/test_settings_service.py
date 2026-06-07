@@ -217,6 +217,7 @@ def test_settings_service_saves_deskpet_and_mcp_playwright_settings() -> None:
             free_access_enabled=True,
             lyric_sync_offset_seconds=2.3,
             music_sing_along_enabled=False,
+            panel_width_percent=80,
         )
     )
     service.save_screen_observation_settings(
@@ -240,6 +241,7 @@ def test_settings_service_saves_deskpet_and_mcp_playwright_settings() -> None:
     assert system["ui"]["free_access_enabled"] is True
     assert system["ui"]["lyric_sync_offset_seconds"] == 2.3
     assert system["ui"]["music_sing_along_enabled"] is False
+    assert system["ui"]["panel_width_percent"] == 80
     loaded = service.load_pet_ui_settings()
     assert loaded.lyric_sync_offset_seconds == 2.3
     assert loaded.music_sing_along_enabled is False
@@ -255,6 +257,7 @@ def test_settings_service_saves_deskpet_and_mcp_playwright_settings() -> None:
         free_access_enabled=True,
         lyric_sync_offset_seconds=2.3,
         music_sing_along_enabled=False,
+        panel_width_percent=80,
     )
     assert service.load_mcp_runtime_settings() == MCPRuntimeSettings(
         windows_enabled=True,

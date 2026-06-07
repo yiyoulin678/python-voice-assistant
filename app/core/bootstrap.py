@@ -33,8 +33,8 @@ from app.storage.visual_observation import VisualObservationStore
 from app.core.plugin_manager import MutsukiPluginManager, SakuraPluginManager
 
 
-PORTRAIT_SCALE_MIN_PERCENT = 50
-PORTRAIT_SCALE_MAX_PERCENT = 150
+PORTRAIT_SCALE_MIN_PERCENT = 20
+PORTRAIT_SCALE_MAX_PERCENT = 500
 PORTRAIT_SCALE_DEFAULT_PERCENT = 80
 
 

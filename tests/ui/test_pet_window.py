@@ -232,8 +232,9 @@ def test_pet_window_loads_normalized_portrait_scale_percent() -> None:
 
     assert MinimalWindow({})._load_portrait_scale_percent() == 80
     assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 80
-    assert MinimalWindow({"portrait_scale_percent": 20})._load_portrait_scale_percent() == 50
-    assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 150
+    assert MinimalWindow({"portrait_scale_percent": 10})._load_portrait_scale_percent() == 20
+    assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 180
+    assert MinimalWindow({"portrait_scale_percent": 600})._load_portrait_scale_percent() == 500
 
 
 def test_pet_window_loads_normalized_subtitle_display_speed() -> None:
@@ -308,7 +309,7 @@ def test_pet_window_locks_controls_during_startup_initialization(monkeypatch) ->
     assert window.startup_initializing
     assert window.speech_label.text() == STARTUP_INITIALIZING_TEXT
     assert not window.input_edit.isEnabled()
-    assert not window.send_button.isEnabled()
+    assert window.input_edit.placeholderText() == STARTUP_INITIALIZING_TEXT
     assert not window.screenshot_button.isEnabled()
 
     menu = window._build_menu()
@@ -366,7 +367,6 @@ def test_pet_window_unlocks_after_deferred_services_are_applied(monkeypatch) -> 
 
     assert not window.startup_initializing
     assert window.input_edit.isEnabled()
-    assert window.send_button.isEnabled()
     assert window.screenshot_button.isEnabled()
     assert window.subtitle_controller.speech_text == window.character_profile.initial_message
     assert not window.tts_error_label.isHidden()
@@ -2299,6 +2299,8 @@ class _DummyEditableInput:
     def __init__(self, text: str) -> None:
         self._text = text
         self.cleared = False
+        self.enabled = True
+        self.placeholder = ""
 
     def text(self) -> str:
         return self._text
@@ -2309,6 +2311,9 @@ class _DummyEditableInput:
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+    def setPlaceholderText(self, text: str) -> None:
+        self.placeholder = text
 
 
 class _DummyTimer:
@@ -2445,12 +2450,14 @@ def test_set_busy_disables_manual_screenshot_button() -> None:
 
     window = MinimalBusyWindow()
     window.stt_settings = STTSettings()
+    window._voice_rec_starting = False
+    window._voice_transcribe_thread = None
     window.input_edit = _DummyEditableInput("")
     window.screenshot_button = _DummyButton()
-    window.send_button = _DummyButton()
     window.confirm_action_button = _DummyButton()
     window.cancel_action_button = _DummyButton()
     window._log_interaction_stage = lambda *_args, **_kwargs: None
+    window._update_proactive_care_hint = lambda: None
 
     window._set_busy(True)
     assert not window.screenshot_button.enabled

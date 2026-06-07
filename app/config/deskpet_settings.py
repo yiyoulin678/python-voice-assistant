@@ -11,6 +11,18 @@ REMINDER_CHECK_INTERVAL_MIN_SECONDS = 3
 REMINDER_CHECK_INTERVAL_MAX_SECONDS = 120
 REMINDER_CHECK_INTERVAL_DEFAULT_SECONDS = 5
 
+PANEL_WIDTH_PERCENT_MIN = 20
+PANEL_WIDTH_PERCENT_MAX = 500
+PANEL_WIDTH_PERCENT_DEFAULT = 100
+
+
+def normalize_panel_width_percent(value: object) -> int:
+    try:
+        percent = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        percent = PANEL_WIDTH_PERCENT_DEFAULT
+    return max(PANEL_WIDTH_PERCENT_MIN, min(PANEL_WIDTH_PERCENT_MAX, percent))
+
 
 @dataclass(frozen=True)
 class PetUISettings:
@@ -26,6 +38,7 @@ class PetUISettings:
     ui_theme: str = DEFAULT_UI_THEME
     desktop_pet_rules_enabled: bool = False
     strict_ja_zh_correspondence_enabled: bool = False
+    panel_width_percent: int = PANEL_WIDTH_PERCENT_DEFAULT
 
     def normalized(self) -> "PetUISettings":
         language = str(self.subtitle_language).strip().lower()
@@ -50,6 +63,7 @@ class PetUISettings:
             ui_theme=normalize_ui_theme(self.ui_theme),
             desktop_pet_rules_enabled=bool(self.desktop_pet_rules_enabled),
             strict_ja_zh_correspondence_enabled=bool(self.strict_ja_zh_correspondence_enabled),
+            panel_width_percent=normalize_panel_width_percent(self.panel_width_percent),
         )
 
 

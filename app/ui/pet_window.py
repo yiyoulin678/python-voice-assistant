@@ -54,6 +54,7 @@ from app.agent.memory_curator import (
 )
 from app.agent.memory_curation_worker import MemoryCurationWorker
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
+from app.config.deskpet_settings import normalize_panel_width_percent
 from app.core.app_context import AppContext
 from app.config.character_loader import (
     DEFAULT_CHARACTER_ID,
@@ -174,12 +175,13 @@ REPLY_HISTORY_PANEL_HEIGHT = 58
 REPLY_HISTORY_BUTTON_SIZE = 26
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
-DEFAULT_STAGE_WIDTH = 680
+DEFAULT_STAGE_WIDTH = 560
 DEFAULT_STAGE_HEIGHT = 500
-BUBBLE_MAX_WIDTH = 480
+BUBBLE_MAX_WIDTH = 360
+BUBBLE_SIDE_MARGIN = 56
 BUBBLE_HEIGHT = 108
-INPUT_BAR_HEIGHT = 44
-INPUT_CONTROL_HEIGHT = 30
+INPUT_BAR_HEIGHT = 40
+INPUT_CONTROL_HEIGHT = 28
 STAGE_BOTTOM_INSET = 50
 BUBBLE_TOP_GAP = 68
 INPUT_ABOVE_BUBBLE_GAP = 8
@@ -230,6 +232,7 @@ class PetWindow(QWidget):
         self.strict_ja_zh_correspondence_enabled = (
             pet_ui_settings.strict_ja_zh_correspondence_enabled
         )
+        self.panel_width_percent = pet_ui_settings.normalized().panel_width_percent
         self.agent_runtime.set_strict_ja_zh_correspondence_enabled(
             self.strict_ja_zh_correspondence_enabled
         )
@@ -279,7 +282,10 @@ class PetWindow(QWidget):
             self.subtitle_typing_interval_ms,
             self.reply_segment_pause_ms,
         ) = self._load_subtitle_display_speed()
-        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
+        self.stage_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.panel_width_percent,
+        )
         self.pending_tool_action: PendingToolAction | None = None
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
@@ -493,11 +499,6 @@ class PetWindow(QWidget):
         self.input_edit.installEventFilter(self)
         self.input_edit.returnPressed.connect(self._handle_return_pressed)
 
-        self.send_button = QPushButton("发送", self.input_bar)
-        self.send_button.setObjectName("sendButton")
-        self.send_button.setFixedHeight(INPUT_CONTROL_HEIGHT)
-        self.send_button.clicked.connect(self._handle_send_button_clicked)
-
         self.screenshot_button = QPushButton("截图", self.input_bar)
         self.screenshot_button.setObjectName("screenshotButton")
         self.screenshot_button.setFixedHeight(INPUT_CONTROL_HEIGHT)
@@ -527,13 +528,12 @@ class PetWindow(QWidget):
         self.cancel_action_button = self.tool_confirmation_panel.cancel_button
 
         input_layout = QHBoxLayout()
-        input_layout.setContentsMargins(10, 7, 10, 7)
-        input_layout.setSpacing(8)
+        input_layout.setContentsMargins(8, 6, 8, 6)
+        input_layout.setSpacing(6)
         input_layout.addWidget(self.input_edit, 1)
         input_layout.addWidget(self.tool_confirmation_panel)
         input_layout.addWidget(self.voice_button)
         input_layout.addWidget(self.screenshot_button)
-        input_layout.addWidget(self.send_button)
         self.input_bar.setLayout(input_layout)
 
         if self.music_plugin_enabled:
@@ -648,7 +648,6 @@ class PetWindow(QWidget):
         """输入栏按钮不走窗口拖动逻辑，否则 clicked 信号会被吞掉。"""
         exempt_widgets = (
             getattr(self, "voice_button", None),
-            getattr(self, "send_button", None),
             getattr(self, "screenshot_button", None),
             getattr(self, "input_edit", None),
             getattr(self, "confirm_action_button", None),
@@ -1004,7 +1003,7 @@ class PetWindow(QWidget):
         self._apply_speech_font()
         self.input_edit.setFont(text_font)
         self.screenshot_button.setFont(button_font)
-        self.send_button.setFont(button_font)
+        self.voice_button.setFont(button_font)
 
     def _apply_ui_theme(self, ui_theme: str) -> None:
         self.ui_theme = ui_theme
@@ -1056,7 +1055,6 @@ class PetWindow(QWidget):
                     self.input_edit,
                     self.voice_button,
                     self.screenshot_button,
-                    self.send_button,
                 ]
             )
         return tuple(targets)
@@ -1163,7 +1161,6 @@ class PetWindow(QWidget):
                 self.input_edit,
                 self.voice_button,
                 self.screenshot_button,
-                self.send_button,
             ):
                 widget.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
                 widget.installEventFilter(self)
@@ -1231,7 +1228,7 @@ class PetWindow(QWidget):
         if not controls_visible:
             return
 
-        bubble_width = min(BUBBLE_MAX_WIDTH, width - 80)
+        bubble_width = _bubble_layout_width(width, self.panel_width_percent)
         bubble_x = (width - bubble_width) // 2
         bubble_y = (
             height
@@ -1440,13 +1437,6 @@ class PetWindow(QWidget):
             return
         self._begin_interaction("return_pressed")
         self.send_message("return_pressed")
-
-    @Slot()
-    def _handle_send_button_clicked(self) -> None:
-        if getattr(self, "startup_initializing", False):
-            return
-        self._begin_interaction("send_button_clicked")
-        self.send_message("send_button_clicked")
 
     def _voice_input_available(self) -> bool:
         return self._voice_unavailable_reason() is None
@@ -3168,17 +3158,19 @@ class PetWindow(QWidget):
         )
         if hasattr(self, "voice_button"):
             self.voice_button.setEnabled(voice_enabled)
-        self.send_button.setEnabled(controls_enabled)
         tool_confirmation_panel = getattr(self, "tool_confirmation_panel", None)
         if tool_confirmation_panel is not None:
             tool_confirmation_panel.set_busy(busy or startup_initializing)
         else:
             self.confirm_action_button.setEnabled(controls_enabled)
             self.cancel_action_button.setEnabled(controls_enabled)
-        if startup_initializing:
-            self.send_button.setText("初始化")
-        else:
-            self.send_button.setText("等待" if busy else "发送")
+        if hasattr(self, "input_edit") and not self.input_edit.text().strip():
+            if startup_initializing:
+                pass
+            elif busy:
+                self.input_edit.setPlaceholderText("等待回复中…")
+            else:
+                self._update_proactive_care_hint()
         self._log_interaction_stage("set_busy", {"busy": busy})
         update_reply_history_buttons = getattr(self, "_update_reply_history_buttons", None)
         if update_reply_history_buttons is not None:
@@ -3775,6 +3767,9 @@ class PetWindow(QWidget):
             self.agent_runtime.set_strict_ja_zh_correspondence_enabled(
                 self.strict_ja_zh_correspondence_enabled
             )
+        if normalized.panel_width_percent != self.panel_width_percent:
+            self.panel_width_percent = normalized.panel_width_percent
+            self._apply_panel_layout()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
 
@@ -4024,15 +4019,23 @@ class PetWindow(QWidget):
 
     def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
-        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
-        self.portrait_controller.set_stage_size(self.stage_size)
         self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
         self.portrait_controller.apply_current()
+        self._apply_panel_layout()
+
+    def _apply_panel_layout(self) -> None:
+        self.stage_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.panel_width_percent,
+        )
+        self.portrait_controller.set_stage_size(self.stage_size)
         self._sync_stage_height_for_layout()
         if self._live2d_hover_ui:
             self._apply_ui_controls_visibility(force=True)
         else:
             self._layout_stage()
+        if (self.width(), self.height()) != self.stage_size:
+            self.resize(*self.stage_size)
 
     def _sync_stage_height_for_layout(self) -> None:
         if self._live2d_hover_ui:
@@ -4359,12 +4362,27 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def _stage_size_for_portrait_scale_percent(portrait_scale_percent: int) -> tuple[int, int]:
-    scale = normalize_portrait_scale_percent(portrait_scale_percent) / 100
+def _panel_width_scale(panel_width_percent: int) -> float:
+    return normalize_panel_width_percent(panel_width_percent) / 100
+
+
+def _stage_size_for_layout(
+    portrait_scale_percent: int,
+    panel_width_percent: int,
+) -> tuple[int, int]:
+    portrait_scale = normalize_portrait_scale_percent(portrait_scale_percent) / 100
+    panel_scale = _panel_width_scale(panel_width_percent)
     return (
-        max(520, round(DEFAULT_STAGE_WIDTH * scale)),
-        max(380, round(DEFAULT_STAGE_HEIGHT * scale)),
+        max(460, round(DEFAULT_STAGE_WIDTH * portrait_scale * panel_scale)),
+        max(380, round(DEFAULT_STAGE_HEIGHT * portrait_scale)),
     )
+
+
+def _bubble_layout_width(stage_width: int, panel_width_percent: int) -> int:
+    panel_scale = _panel_width_scale(panel_width_percent)
+    bubble_max = max(240, round(BUBBLE_MAX_WIDTH * panel_scale))
+    side_margin = max(40, round(BUBBLE_SIDE_MARGIN * panel_scale))
+    return min(bubble_max, stage_width - side_margin)
 
 
 def _configure_reply_history_panel(panel: QFrame) -> None:
