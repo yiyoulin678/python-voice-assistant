@@ -9,16 +9,11 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 def build_pet_tray_menu(
     parent: QWidget,
     *,
-    chinese_subtitles_checked: bool,
-    free_access_checked: bool,
     ui_locked_checked: bool = False,
     on_hide: Callable[[], None],
-    on_toggle_chinese_subtitles: Callable[[bool], None],
-    on_toggle_free_access: Callable[[bool], None],
     on_toggle_ui_locked: Callable[[bool], None] | None = None,
     on_show_history: Callable[[], None],
     on_show_settings: Callable[[], None],
-    on_show_napcat_console: Callable[[], None] | None = None,
     on_restart: Callable[[], None] | None = None,
     interactions_enabled: bool = True,
 ) -> QMenu:
@@ -40,22 +35,6 @@ def build_pet_tray_menu(
 
     menu.addSeparator()
 
-    subtitle_action = QAction("显示中文字幕", parent)
-    subtitle_action.setCheckable(True)
-    subtitle_action.setChecked(chinese_subtitles_checked)
-    subtitle_action.setEnabled(interactions_enabled)
-    subtitle_action.triggered.connect(on_toggle_chinese_subtitles)
-    menu.addAction(subtitle_action)
-
-    free_access_action = QAction("完整访问权限", parent)
-    free_access_action.setCheckable(True)
-    free_access_action.setChecked(free_access_checked)
-    free_access_action.setEnabled(interactions_enabled)
-    free_access_action.triggered.connect(on_toggle_free_access)
-    menu.addAction(free_access_action)
-
-    menu.addSeparator()
-
     history_action = QAction("历史记录", parent)
     history_action.setEnabled(interactions_enabled)
     history_action.triggered.connect(on_show_history)
@@ -65,12 +44,6 @@ def build_pet_tray_menu(
     settings_action.setEnabled(interactions_enabled)
     settings_action.triggered.connect(on_show_settings)
     menu.addAction(settings_action)
-
-    if on_show_napcat_console is not None:
-        napcat_console_action = QAction("QQ 控制台", parent)
-        napcat_console_action.setEnabled(interactions_enabled)
-        napcat_console_action.triggered.connect(on_show_napcat_console)
-        menu.addAction(napcat_console_action)
 
     if on_restart is not None:
         restart_action = QAction("重启 Mutsuki", parent)

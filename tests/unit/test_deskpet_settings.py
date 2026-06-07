@@ -31,9 +31,17 @@ def test_stage_size_scales_width_with_panel_width_percent() -> None:
     narrow_width, narrow_height = _stage_size_for_layout(100, 80)
 
     assert default_width == DEFAULT_STAGE_WIDTH
-    assert default_height == 500
+    assert default_height == 800
     assert narrow_width < default_width
     assert narrow_height == default_height
+
+
+def test_stage_size_scales_with_portrait_scale_percent() -> None:
+    small_width, small_height = _stage_size_for_layout(100, 100)
+    large_width, large_height = _stage_size_for_layout(200, 100)
+
+    assert large_width > small_width
+    assert large_height > small_height
 
 
 def test_bubble_layout_width_scales_with_panel_width_percent() -> None:

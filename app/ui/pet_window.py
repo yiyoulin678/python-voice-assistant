@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QKeyEvent,
     QMouseEvent,
     QPixmap,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -181,8 +182,8 @@ REPLY_HISTORY_PANEL_HEIGHT = 58
 REPLY_HISTORY_BUTTON_SIZE = 26
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
-DEFAULT_STAGE_WIDTH = 560
-DEFAULT_STAGE_HEIGHT = 500
+DEFAULT_STAGE_WIDTH = 780
+DEFAULT_STAGE_HEIGHT = 800
 BUBBLE_MAX_WIDTH = 360
 BUBBLE_SIDE_MARGIN = 56
 BUBBLE_HEIGHT = 108
@@ -558,18 +559,14 @@ class PetWindow(QWidget):
         for drag_widget in (self.bubble, self.name_label, self.speech_label):
             drag_widget.installEventFilter(self)
 
-        self.portrait_controller.apply_current()
         if self._using_live2d:
-            self._init_live2d_hover_ui()
             if self.stt_settings.enabled and hasattr(self, "voice_button"):
                 self.voice_button.setToolTip(
                     "点击开始/结束录音；或长按安安说话，松手结束并识别"
                 )
-        else:
-            self._sync_stage_height_for_layout()
-            if (self.width(), self.height()) != self.stage_size:
-                self.resize(*self.stage_size)
-            self._layout_stage()
+        self._apply_panel_layout()
+        if self._using_live2d:
+            self._init_live2d_hover_ui()
         self._create_tray_icon()
         self._move_to_default_position()
         if getattr(self, "startup_initializing", False):
@@ -1268,17 +1265,12 @@ class PetWindow(QWidget):
     def _build_menu(self) -> QMenu:
         menu = build_pet_tray_menu(
             self,
-            chinese_subtitles_checked=self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
-            free_access_checked=self.free_access_enabled,
             ui_locked_checked=self.ui_locked,
             interactions_enabled=not getattr(self, "startup_initializing", False),
             on_hide=self.hide,
-            on_toggle_chinese_subtitles=self._toggle_chinese_subtitles,
-            on_toggle_free_access=self._toggle_free_access,
             on_toggle_ui_locked=self._toggle_ui_locked,
             on_show_history=self.show_history,
             on_show_settings=self.show_settings,
-            on_show_napcat_console=self.show_napcat_console,
             on_restart=self._confirm_restart_application,
         )
         if self._using_live2d:
@@ -4070,9 +4062,14 @@ class PetWindow(QWidget):
 
     def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
-        self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
-        self.portrait_controller.apply_current()
         self._apply_panel_layout()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        previous_size = self.stage_size
+        self._apply_panel_layout()
+        if self.stage_size != previous_size:
+            self._move_to_default_position()
 
     def _apply_panel_layout(self) -> None:
         self.stage_size = _stage_size_for_layout(
@@ -4080,6 +4077,8 @@ class PetWindow(QWidget):
             self.panel_width_percent,
         )
         self.portrait_controller.set_stage_size(self.stage_size)
+        self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
+        self.portrait_controller.apply_current()
         self._sync_stage_height_for_layout()
         if self._live2d_hover_ui:
             self._apply_ui_controls_visibility(force=True)

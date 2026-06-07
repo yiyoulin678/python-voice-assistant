@@ -34,8 +34,8 @@ from app.core.plugin_manager import MutsukiPluginManager, SakuraPluginManager
 
 
 PORTRAIT_SCALE_MIN_PERCENT = 20
-PORTRAIT_SCALE_MAX_PERCENT = 500
-PORTRAIT_SCALE_DEFAULT_PERCENT = 80
+PORTRAIT_SCALE_MAX_PERCENT = 200
+PORTRAIT_SCALE_DEFAULT_PERCENT = 100
 
 
 @dataclass(frozen=True)

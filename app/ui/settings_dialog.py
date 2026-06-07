@@ -396,6 +396,18 @@ class SettingsDialog(QDialog):
         self.subtitle_language_combo.setCurrentIndex(
             language_index if language_index >= 0 else 0
         )
+        self.subtitle_language_combo.setToolTip(
+            "控制桌宠气泡与历史记录显示中文翻译或日文原文。"
+        )
+
+        self.free_access_enabled_check = QCheckBox(
+            "完整工具访问权限（跳过部分高风险工具确认）",
+            tab,
+        )
+        self.free_access_enabled_check.setChecked(self.initial_free_access_enabled)
+        self.free_access_enabled_check.setToolTip(
+            "开启后，多数需确认的工具可直接执行；删除文件等高风险操作仍会要求确认。"
+        )
 
         self.strict_ja_zh_correspondence_check = QCheckBox(
             "完全对应（字幕与日语 TTS 语气、句意一致，禁止概括缩写）",
@@ -459,6 +471,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow("面板宽度", self._build_panel_width_control(tab))
         form_layout.addRow("界面主题", self.ui_theme_combo)
         form_layout.addRow("字幕语言", self.subtitle_language_combo)
+        form_layout.addRow("", self.free_access_enabled_check)
         form_layout.addRow("", self.strict_ja_zh_correspondence_check)
         form_layout.addRow("", self.reminders_enabled_check)
         form_layout.addRow("提醒检查间隔", self.reminder_interval_spin)
@@ -569,7 +582,8 @@ class SettingsDialog(QDialog):
         self.portrait_scale_spin.setSuffix("%")
         self.portrait_scale_spin.setValue(self.portrait_scale_percent)
         self.portrait_scale_spin.setToolTip(
-            "调整立绘显示大小（20%–500%）。100% 为原始尺寸。"
+            "调整立绘显示大小（20%–200%）。100% 为原始尺寸；"
+            "数值越大窗口与立绘同步放大，可拖动桌宠调整位置。"
         )
 
         self.portrait_scale_slider.valueChanged.connect(self.portrait_scale_spin.setValue)
@@ -925,7 +939,10 @@ class SettingsDialog(QDialog):
         if self._on_open_napcat_console is not None:
             self.napcat_console_button = QPushButton("打开 QQ 控制台", tab)
             self.napcat_console_button.clicked.connect(self._on_open_napcat_console)
-            form_layout.addRow("", self.napcat_console_button)
+            self.napcat_console_button.setToolTip(
+                "查看 QQ 入站消息、连接状态与最近回复，无需再从右键菜单进入。"
+            )
+            form_layout.addRow("QQ 控制台", self.napcat_console_button)
         tab.setLayout(form_layout)
         return tab
 
@@ -1004,12 +1021,6 @@ class SettingsDialog(QDialog):
         self.debug_file_enabled_check = QCheckBox("输出文件运行日志", tab)
         self.debug_file_enabled_check.setChecked(debug_settings.file_enabled)
 
-        self.free_access_enabled_check = QCheckBox(
-            "完整工具访问权限（跳过部分高风险工具确认）",
-            tab,
-        )
-        self.free_access_enabled_check.setChecked(self.initial_free_access_enabled)
-
         normalized_memory = self.memory_curation_settings
         self.memory_curation_enabled_check = QCheckBox("自动整理长期记忆", tab)
         self.memory_curation_enabled_check.setChecked(normalized_memory.enabled)
@@ -1050,7 +1061,6 @@ class SettingsDialog(QDialog):
         form_layout.addRow("", self.debug_log_enabled_check)
         form_layout.addRow("", self.debug_body_enabled_check)
         form_layout.addRow("", self.debug_file_enabled_check)
-        form_layout.addRow("", self.free_access_enabled_check)
         form_layout.addRow("", self.memory_curation_enabled_check)
         form_layout.addRow("自动整理触发", self.memory_curation_trigger_spin)
         form_layout.addRow("历史回填上限", self.memory_curation_backfill_spin)

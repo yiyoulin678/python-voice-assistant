@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QWidget
 
 from app.config.character_loader import CharacterLive2D
 from app.live2d.runtime import get_live2d_module
+from app.ui.portrait_controller import PORTRAIT_SCALE_MAX_PERCENT
 from app.ui.live2d_motions import Live2DMotionEntry, load_motion_catalog, resolve_motion_file
 
 
@@ -100,7 +101,8 @@ class Live2DWidget(QOpenGLWidget):
                 return
 
     def set_display_scale(self, scale: float) -> None:
-        self._scale = max(0.5, min(1.5, scale))
+        max_scale = PORTRAIT_SCALE_MAX_PERCENT / 100
+        self._scale = max(0.2, min(max_scale, scale))
         if self._model is not None:
             self._model.SetScale(self._scale)
 

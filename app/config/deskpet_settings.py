@@ -15,7 +15,6 @@ PANEL_WIDTH_PERCENT_MIN = 20
 PANEL_WIDTH_PERCENT_MAX = 500
 PANEL_WIDTH_PERCENT_DEFAULT = 100
 
-
 def normalize_panel_width_percent(value: object) -> int:
     try:
         percent = int(value)  # type: ignore[arg-type]

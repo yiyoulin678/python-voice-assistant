@@ -314,3 +314,32 @@ def test_history_window_shows_play_button_for_assistant_entries() -> None:
 
     window.deleteLater()
     app.processEvents()
+
+
+def test_history_window_empty_state_uses_assistant_name() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not all(hasattr(qtwidgets, name) for name in ("QApplication", "QLabel")):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+
+    from app.ui.history_window import HistoryWindow
+
+    QApplication = qtwidgets.QApplication
+    QLabel = qtwidgets.QLabel
+    app = QApplication.instance() or QApplication([])
+
+    class EmptyHistoryStore:
+        assistant_name = "安安"
+
+        def load(self) -> list[ChatHistoryEntry]:
+            return []
+
+    window = HistoryWindow(EmptyHistoryStore())  # type: ignore[arg-type]
+    app.processEvents()
+
+    empty_labels = window.findChildren(QLabel, "systemText")
+    assert len(empty_labels) == 1
+    assert "等和安安聊过之后" in empty_labels[0].text()
+
+    window.deleteLater()
+    app.processEvents()

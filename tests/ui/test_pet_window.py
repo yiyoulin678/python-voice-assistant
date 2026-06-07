@@ -64,13 +64,12 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     QWidget = qtwidgets.QWidget
     app = QApplication.instance() or QApplication([])
     host = QWidget()
-    host.subtitle_language = SUBTITLE_LANGUAGE_ZH
-    host.free_access_enabled = True
-    host._toggle_chinese_subtitles = lambda _checked: None
-    host._toggle_free_access = lambda _checked: None
+    host.ui_locked = False
+    host._using_live2d = False
     host.show_history = lambda: None
     host.show_settings = lambda: None
-
+    host._toggle_ui_locked = lambda _checked: None
+    host._confirm_restart_application = lambda: None
     menu = PetWindow._build_menu(host)  # type: ignore[arg-type]
     actions = [action for action in menu.actions() if not action.isSeparator()]
     texts = [action.text() for action in actions]
@@ -79,10 +78,10 @@ def test_pet_window_menu_keeps_only_allowed_checkable_switches() -> None:
     assert texts[0] == "隐藏至托盘"
     assert "启用模型视觉" not in texts
     assert "允许自主看屏幕" not in texts
-    assert "自由访问权限" not in texts
-    assert "显示中文字幕" in checkable_texts
-    assert "完整访问权限" in checkable_texts
-    assert len(checkable_texts) == 2
+    assert "显示中文字幕" not in texts
+    assert "完整访问权限" not in texts
+    assert "QQ 控制台" not in texts
+    assert checkable_texts == ["锁定界面（仅立绘可点，其余穿透）"]
 
     menu.deleteLater()
     host.deleteLater()
@@ -202,9 +201,9 @@ def test_portrait_controller_scales_pixmap_by_configured_percent() -> None:
     )
 
     expected_sizes = {
-        50: (220, 225),
-        100: (440, 450),
-        150: (660, 675),
+        50: (360, 380),
+        100: (720, 760),
+        150: (1080, 1140),
     }
     for percent, expected_size in expected_sizes.items():
         controller.set_portrait_scale_percent(percent)
@@ -230,11 +229,11 @@ def test_pet_window_loads_normalized_portrait_scale_percent() -> None:
             assert section == "ui"
             return self.values
 
-    assert MinimalWindow({})._load_portrait_scale_percent() == 80
-    assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 80
+    assert MinimalWindow({})._load_portrait_scale_percent() == 100
+    assert MinimalWindow({"portrait_scale_percent": "invalid"})._load_portrait_scale_percent() == 100
     assert MinimalWindow({"portrait_scale_percent": 10})._load_portrait_scale_percent() == 20
     assert MinimalWindow({"portrait_scale_percent": 180})._load_portrait_scale_percent() == 180
-    assert MinimalWindow({"portrait_scale_percent": 600})._load_portrait_scale_percent() == 500
+    assert MinimalWindow({"portrait_scale_percent": 600})._load_portrait_scale_percent() == 200
 
 
 def test_pet_window_loads_normalized_subtitle_display_speed() -> None:

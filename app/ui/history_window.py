@@ -226,7 +226,11 @@ class HistoryWindow(QDialog):
                 widget.deleteLater()
 
     def _add_empty_state(self) -> None:
-        empty_label = QLabel("还没有历史记录\n等和桜聊过之后，这里会安静地收好对话。", self.history_content)
+        assistant_name = self.history_store.assistant_name.strip() or "角色"
+        empty_label = QLabel(
+            f"还没有历史记录\n等和{assistant_name}聊过之后，这里会安静地收好对话。",
+            self.history_content,
+        )
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_label.setObjectName("systemText")
         empty_label.setWordWrap(True)
