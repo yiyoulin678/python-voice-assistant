@@ -573,17 +573,8 @@ class PetWindow(QWidget):
             drag_widget.installEventFilter(self)
         #print("PET D")
 
-<<<<<<< HEAD
         self.portrait_controller.apply_current()
         #print("PET E")
-=======
-        if self._using_live2d:
-            if self.stt_settings.enabled and hasattr(self, "voice_button"):
-                self.voice_button.setToolTip(
-                    "点击开始/结束录音；或长按安安说话，松手结束并识别"
-                )
-        self._apply_panel_layout()
->>>>>>> 27923bbe5bf8ca0a0f37de64cfaef8e5912c57b2
         if self._using_live2d:
             self._init_live2d_hover_ui()
         self._create_tray_icon()
@@ -2909,12 +2900,7 @@ class PetWindow(QWidget):
         self._set_busy(False)
         self.reminder_timer.start()
         self._sync_proactive_care_timer()
-<<<<<<< HEAD
         #QTimer.singleShot(0, self._maybe_start_memory_backfill)
-=======
-        self._start_napcat_bridge_if_enabled()
-        QTimer.singleShot(0, self._maybe_start_memory_backfill)
->>>>>>> 27923bbe5bf8ca0a0f37de64cfaef8e5912c57b2
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log(
