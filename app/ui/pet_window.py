@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QKeyEvent,
     QMouseEvent,
     QPixmap,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -49,11 +50,17 @@ from app.agent import (
     AgentResult,
     PendingToolAction,
 )
+from app.ai.session_summary import (
+    SessionTurn,
+    session_summary_note_path,
+    should_summarize_turn,
+)
 from app.agent.memory_curator import (
     MemoryCurationResult,
 )
 from app.agent.memory_curation_worker import MemoryCurationWorker
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
+from app.config.deskpet_settings import normalize_panel_width_percent
 from app.core.app_context import AppContext
 from app.config.character_loader import (
     DEFAULT_CHARACTER_ID,
@@ -67,10 +74,25 @@ from app.llm.context_trimming import trim_messages_for_model
 from app.core.chat_worker import ChatWorker, EventWorker
 from app.core.debug_log import debug_log, summarize_messages
 from app.ui.history_window import HistoryWindow
+from app.platforms.napcat import NapCatBridge
+from app.platforms.napcat.log import napcat_log
+from app.platforms.napcat.onebot_v11 import (
+    NapCatInboundMessage,
+    format_agent_reply_text,
+    format_inbound_pet_display,
+)
+from app.platforms.napcat.outbound import (
+    format_outbound_pet_display,
+    parse_outbound_directive,
+)
+from app.ui.napcat_console_window import NapCatConsoleWindow
 from app.agent.proactive_care import (
     PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER,
+    PROACTIVE_TOPIC_HISTORY_MARKER,
     PROACTIVE_TIMER_DUE_GRACE_SECONDS,
     PROACTIVE_TIMER_POLL_INTERVAL_MS,
+    compute_proactive_care_countdown_seconds,
+    format_proactive_care_countdown_hint,
 )
 from app.agent.screen_observation import (
     SCREEN_OBSERVATION_HISTORY_MARKER,
@@ -81,9 +103,19 @@ from app.agent.screen_observation import (
     build_screen_observation_user_message,
     capture_screen_observation,
 )
+from app.ui.session_summary_worker import SessionSummaryWorker
 from app.ui.settings_dialog import SettingsDialog
-from app.ui.win_click_through import apply_locked_mouse_transparency, apply_locked_window_region
+from app.ui.win_click_through import (
+    apply_locked_mouse_transparency,
+    refresh_window_hit_region,
+)
 from app.live2d.runtime import ensure_live2d_init, is_live2d_available, live2d_import_error
+from app.config.character_loader import CharacterExpressionPreset
+from app.ui.live2d_expression_presets import (
+    build_manual_expression_presets,
+    extra_expression_ids,
+    preset_menu_label,
+)
 from app.ui.live2d_portrait_controller import Live2DPortraitController
 from app.ui.portrait_controller import (
     PORTRAIT_SCALE_DEFAULT_PERCENT,
@@ -117,17 +149,19 @@ from app.ui.fonts import _rounded_chinese_font, _rounded_japanese_font
 from app.ui import (
     FrostedGlassFrame,
     ManualScreenshotOverlay,
-    PET_WINDOW_STYLEHEET,
+    build_pet_window_stylesheet,
     SubtitleController,
     ToolConfirmationPanel,
     build_pet_tray_menu,
     capture_virtual_desktop_pixmap,
 )
-from app.media.music_sing_along import MusicSingAlongController
 from app.media.now_playing import set_preferred_music_source
 from app.ui.music_lyrics_overlay import LYRICS_OVERLAY_HEIGHT, MusicLyricsOverlay
+from app.storage.chat_audio import archive_chat_audio, export_qq_voice_audio
+from app.voice.text_language_guard import should_skip_tts_text
 from app.voice import VoicePlaybackController
 from app.voice import audio_io, speech_to_text
+from app.voice.history_audio_player import HistoryAudioPlayer
 from app.voice.stt_settings import STTSettings
 from app.voice.voice_workers import (
     StartRecordingWorker,
@@ -156,12 +190,13 @@ REPLY_HISTORY_PANEL_HEIGHT = 58
 REPLY_HISTORY_BUTTON_SIZE = 26
 REPLY_HISTORY_PREVIOUS_SYMBOL = "▲"
 REPLY_HISTORY_NEXT_SYMBOL = "▼"
-DEFAULT_STAGE_WIDTH = 680
-DEFAULT_STAGE_HEIGHT = 500
-BUBBLE_MAX_WIDTH = 480
+DEFAULT_STAGE_WIDTH = 720
+DEFAULT_STAGE_HEIGHT = 800
+BUBBLE_MAX_WIDTH = 360
+BUBBLE_SIDE_MARGIN = 56
 BUBBLE_HEIGHT = 108
-INPUT_BAR_HEIGHT = 44
-INPUT_CONTROL_HEIGHT = 30
+INPUT_BAR_HEIGHT = 40
+INPUT_CONTROL_HEIGHT = 28
 STAGE_BOTTOM_INSET = 50
 BUBBLE_TOP_GAP = 68
 INPUT_ABOVE_BUBBLE_GAP = 8
@@ -199,6 +234,12 @@ class PetWindow(QWidget):
         self.memory_curation_settings = context.memory_curation_settings
         self.memory_curation_state = context.memory_curation_state
         self.memory_curator = context.memory_curator
+        ai_feature_settings = self.settings_service.load_ai_feature_settings()
+        self.auto_session_summary_enabled = ai_feature_settings.auto_session_summary_enabled
+        self._last_user_message_text = ""
+        self._pending_summary_turn: SessionTurn | None = None
+        self._summary_thread: QThread | None = None
+        self._summary_worker: SessionSummaryWorker | None = None
         pet_ui_settings = self.settings_service.load_pet_ui_settings()
         self.hover_only_ui_enabled = pet_ui_settings.hover_only_ui
         self.subtitle_language = pet_ui_settings.subtitle_language
@@ -206,10 +247,17 @@ class PetWindow(QWidget):
         self.music_plugin_enabled = pet_ui_settings.music_plugin_enabled
         self.music_default_source = pet_ui_settings.music_default_source
         self.lyric_sync_offset_seconds = pet_ui_settings.lyric_sync_offset_seconds
-        self.music_sing_along_enabled = pet_ui_settings.music_sing_along_enabled
+        self.ui_theme = pet_ui_settings.ui_theme
+        self.desktop_pet_rules_enabled = pet_ui_settings.desktop_pet_rules_enabled
+        self.strict_ja_zh_correspondence_enabled = (
+            pet_ui_settings.strict_ja_zh_correspondence_enabled
+        )
+        self.panel_width_percent = pet_ui_settings.normalized().panel_width_percent
+        self.agent_runtime.set_strict_ja_zh_correspondence_enabled(
+            self.strict_ja_zh_correspondence_enabled
+        )
         set_preferred_music_source(pet_ui_settings.music_default_source)
         self.music_lyrics_overlay: MusicLyricsOverlay | None = None
-        self._music_sing_along_controller: MusicSingAlongController | None = None
         self.ui_locked = False
         self._portrait_hit_rect = QRect()
         screen_observation_settings = self.settings_service.load_screen_observation_settings()
@@ -237,6 +285,8 @@ class PetWindow(QWidget):
             print(f"[STT] 初始化音频路径失败: {exc}")
         self._voice_recording = False
         self._voice_rec_starting = False
+        self._voice_from_long_press = False
+        self._voice_long_press_cancel_pending = False
         self._voice_rec_worker: QObject | None = None
         self._voice_transcribe_thread: QThread | None = None
         self._voice_transcribe_worker: QObject | None = None
@@ -251,10 +301,16 @@ class PetWindow(QWidget):
             self.subtitle_typing_interval_ms,
             self.reply_segment_pause_ms,
         ) = self._load_subtitle_display_speed()
-        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
+        self.stage_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.panel_width_percent,
+        )
         self.pending_tool_action: PendingToolAction | None = None
         self.pending_manual_screen_observation: ScreenObservation | None = None
         self.manual_screenshot_overlay: ManualScreenshotOverlay | None = None
+        self._pending_napcat_message: NapCatInboundMessage | None = None
+        self._pending_napcat_voice_message: NapCatInboundMessage | None = None
+        self._outbound_napcat_target: NapCatInboundMessage | None = None
         self.pending_screen_observation_messages: list[dict[str, Any]] | None = None
         self.pending_screen_observation_event: AgentEvent | None = None
         self.pending_screen_observation_event_reminder_id: str | None = None
@@ -283,7 +339,7 @@ class PetWindow(QWidget):
         self.reminder_timer.timeout.connect(self._check_due_reminders)
         self.proactive_care_timer = QTimer(self)
         self.proactive_care_timer.setInterval(PROACTIVE_TIMER_POLL_INTERVAL_MS)
-        self.proactive_care_timer.timeout.connect(self._check_proactive_care)
+        self.proactive_care_timer.timeout.connect(self._on_proactive_care_timer)
         if not self.startup_initializing:
             if self.reminder_settings.enabled:
                 self.reminder_timer.start()
@@ -396,6 +452,8 @@ class PetWindow(QWidget):
             lambda: str(getattr(getattr(self.tts_provider, "settings", None), "text_lang", "ja")),
             self._show_tts_error,
         )
+        self.history_audio_player = HistoryAudioPlayer(self)
+        self._active_segment_audio_path: str | None = None
         self._connect_tts_error_signal(self.tts_provider)
         self.subtitle_controller = SubtitleController(
             self.speech_label,
@@ -403,17 +461,18 @@ class PetWindow(QWidget):
             self.subtitle_language,
             self._log_interaction_stage,
             self._apply_reply_segment,
-            lambda: self._end_interaction("reply_completed"),
+            self._finish_reply_interaction,
             lambda: bool(self.active_interaction_id),
             self,
             preload_segment=self.portrait_controller.preload_for_segment,
-            on_segment_completed=self._record_assistant_segment_note,
+            on_segment_completed=self._on_reply_segment_completed,
+            on_reply_flow_cancelled=self._end_live2d_speech,
             typing_interval_ms=self.subtitle_typing_interval_ms,
             segment_pause_ms=self.reply_segment_pause_ms,
         )
         self.speech_timer = self.subtitle_controller.speech_timer
         if not self.startup_initializing:
-            QTimer.singleShot(0, self._warm_up_current_tts_playback)
+            QTimer.singleShot(0, self._warm_up_current_tts)
 
         bubble_header = QHBoxLayout()
         bubble_header.setContentsMargins(0, 0, 0, 0)
@@ -459,11 +518,6 @@ class PetWindow(QWidget):
         self.input_edit.installEventFilter(self)
         self.input_edit.returnPressed.connect(self._handle_return_pressed)
 
-        self.send_button = QPushButton("发送", self.input_bar)
-        self.send_button.setObjectName("sendButton")
-        self.send_button.setFixedHeight(INPUT_CONTROL_HEIGHT)
-        self.send_button.clicked.connect(self._handle_send_button_clicked)
-
         self.screenshot_button = QPushButton("截图", self.input_bar)
         self.screenshot_button.setObjectName("screenshotButton")
         self.screenshot_button.setFixedHeight(INPUT_CONTROL_HEIGHT)
@@ -493,13 +547,12 @@ class PetWindow(QWidget):
         self.cancel_action_button = self.tool_confirmation_panel.cancel_button
 
         input_layout = QHBoxLayout()
-        input_layout.setContentsMargins(10, 7, 10, 7)
-        input_layout.setSpacing(8)
+        input_layout.setContentsMargins(8, 6, 8, 6)
+        input_layout.setSpacing(6)
         input_layout.addWidget(self.input_edit, 1)
         input_layout.addWidget(self.tool_confirmation_panel)
         input_layout.addWidget(self.voice_button)
         input_layout.addWidget(self.screenshot_button)
-        input_layout.addWidget(self.send_button)
         self.input_bar.setLayout(input_layout)
 
         if self.music_plugin_enabled:
@@ -508,9 +561,7 @@ class PetWindow(QWidget):
                 lyric_sync_offset_seconds=self.lyric_sync_offset_seconds,
                 music_source=self.music_default_source,
             )
-        self._ensure_music_sing_along_controller()
-
-        self.setStyleSheet(PET_WINDOW_STYLEHEET)
+        self._apply_ui_theme(self.ui_theme)
         self._apply_fonts()
         #print("PET A")
         self._load_reply_history_from_store()
@@ -522,15 +573,19 @@ class PetWindow(QWidget):
             drag_widget.installEventFilter(self)
         #print("PET D")
 
+<<<<<<< HEAD
         self.portrait_controller.apply_current()
         #print("PET E")
+=======
+        if self._using_live2d:
+            if self.stt_settings.enabled and hasattr(self, "voice_button"):
+                self.voice_button.setToolTip(
+                    "点击开始/结束录音；或长按安安说话，松手结束并识别"
+                )
+        self._apply_panel_layout()
+>>>>>>> 27923bbe5bf8ca0a0f37de64cfaef8e5912c57b2
         if self._using_live2d:
             self._init_live2d_hover_ui()
-        else:
-            self._sync_stage_height_for_layout()
-            if (self.width(), self.height()) != self.stage_size:
-                self.resize(*self.stage_size)
-            self._layout_stage()
         self._create_tray_icon()
         self._move_to_default_position()
         if getattr(self, "startup_initializing", False):
@@ -543,13 +598,6 @@ class PetWindow(QWidget):
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         self._layout_stage()
-        if self._is_ui_locked():
-            apply_locked_window_region(self, True)
-
-    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        super().showEvent(event)
-        if self._is_ui_locked():
-            apply_locked_window_region(self, True)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
         if isinstance(event, QMouseEvent) and self._using_live2d:
@@ -579,6 +627,8 @@ class PetWindow(QWidget):
                 self._clear_manual_screen_observation()
                 return True
             return super().eventFilter(watched, event)
+        if isinstance(event, QMouseEvent) and self._is_drag_exempt_widget(watched):
+            return super().eventFilter(watched, event)
         if isinstance(event, QMouseEvent):
             if event.type() == QEvent.Type.MouseButtonPress:
                 return self._handle_mouse_press(event)
@@ -599,6 +649,7 @@ class PetWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self.close_external_tools()
+        self._stop_napcat_bridge()
         super().closeEvent(event)
 
     @Slot()
@@ -606,6 +657,26 @@ class PetWindow(QWidget):
         self.close_tts_tools()
         self.close_mcp_tools()
         self.close_plugins()
+        self._stop_napcat_bridge()
+
+    def _is_drag_exempt_widget(self, watched: QObject) -> bool:
+        """输入栏按钮不走窗口拖动逻辑，否则 clicked 信号会被吞掉。"""
+        exempt_widgets = (
+            getattr(self, "voice_button", None),
+            getattr(self, "screenshot_button", None),
+            getattr(self, "input_edit", None),
+            getattr(self, "confirm_action_button", None),
+            getattr(self, "cancel_action_button", None),
+            getattr(self, "reply_history_previous_button", None),
+            getattr(self, "reply_history_next_button", None),
+            getattr(self, "tool_confirmation_panel", None),
+        )
+        if watched in exempt_widgets:
+            return True
+        tool_panel = getattr(self, "tool_confirmation_panel", None)
+        if tool_panel is not None and isinstance(watched, QWidget) and watched.parent() is tool_panel:
+            return True
+        return False
 
     @Slot()
     def close_tts_tools(self) -> None:
@@ -708,8 +779,83 @@ class PetWindow(QWidget):
             controller.trigger_tap(local_pos.x(), local_pos.y())
 
     def _apply_reply_segment(self, segment: ChatSegment) -> None:
+        controller = self.portrait_controller
+        if isinstance(controller, Live2DPortraitController):
+            controller.begin_speech_segment()
+            controller.attach_speech_audio(None)
         self.portrait_controller.apply_for_segment(segment)
         self._sync_reply_history_index_for_segment(segment)
+
+    def _end_live2d_speech(self) -> None:
+        controller = self.portrait_controller
+        if isinstance(controller, Live2DPortraitController):
+            controller.end_speech()
+
+    def _finish_reply_interaction(self) -> None:
+        self._pending_napcat_voice_message = None
+        self._end_live2d_speech()
+        self._maybe_queue_session_summary()
+        self._end_interaction("reply_completed")
+
+    def _on_reply_segment_completed(self, segment: ChatSegment) -> None:
+        self._forward_segment_voice_to_qq(segment)
+        self._record_assistant_segment_note(segment)
+        self._archive_segment_audio_to_history(segment)
+
+    def _maybe_queue_session_summary(self) -> None:
+        if not self.auto_session_summary_enabled:
+            self._pending_summary_turn = None
+            return
+        if self._summary_thread is not None:
+            return
+        turn = self._pending_summary_turn
+        self._pending_summary_turn = None
+        if turn is None or not should_summarize_turn(turn):
+            return
+
+        note_path = session_summary_note_path(
+            self.base_dir / "data" / "notes",
+            self.character_profile.id,
+        )
+        worker = SessionSummaryWorker(self.api_client, turn, note_path)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._on_session_summary_succeeded)
+        worker.failed.connect(self._on_session_summary_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_session_summary_thread)
+        thread.finished.connect(thread.deleteLater)
+        self._summary_worker = worker
+        self._summary_thread = thread
+        thread.start()
+        debug_log(
+            "PetWindow",
+            "已排队自动生成会话纪要",
+            {"note_path": str(note_path)},
+        )
+
+    @Slot(str)
+    def _on_session_summary_succeeded(self, summary: str) -> None:
+        metrics = getattr(self.agent_runtime, "metrics", None)
+        if metrics is not None:
+            metrics.record(
+                "session_summary_completed",
+                {"preview": summary[:240], "character_id": self.character_profile.id},
+            )
+        debug_log("PetWindow", "会话纪要已写入", {"preview": summary[:120]})
+
+    @Slot(str)
+    def _on_session_summary_failed(self, error: str) -> None:
+        debug_log("PetWindow", "会话纪要生成失败", {"error": error})
+
+    def _clear_session_summary_thread(self) -> None:
+        self._summary_thread = None
+        self._summary_worker = None
+
+    def _apply_ai_feature_settings(self, settings) -> None:  # noqa: ANN001
+        self.auto_session_summary_enabled = bool(settings.auto_session_summary_enabled)
 
     def _record_assistant_segment_note(self, segment: ChatSegment) -> None:
         text = segment.display_text(self.subtitle_language).strip()
@@ -726,6 +872,51 @@ class PetWindow(QWidget):
                 handle.write(block)
         except OSError as exc:
             debug_log("PetWindow", "台词笔记写入失败", {"path": str(note_path), "error": str(exc)})
+
+    def _archive_segment_audio_to_history(self, segment: ChatSegment) -> None:
+        audio_path = self._active_segment_audio_path
+        if not audio_path:
+            return
+        source = Path(audio_path)
+        self._active_segment_audio_path = None
+        if not source.exists():
+            return
+        try:
+            relative_path = archive_chat_audio(
+                source,
+                self.base_dir,
+                self.character_profile.id,
+            )
+            attached = self.history_store.attach_audio_to_latest_matching_assistant(
+                segment.text,
+                segment.translation,
+                segment.tone,
+                segment.portrait,
+                relative_path,
+            )
+            debug_log(
+                "History",
+                "归档分段语音",
+                {
+                    "attached": attached,
+                    "audio_path": relative_path,
+                    "text": segment.text,
+                },
+            )
+            history_window = getattr(self, "history_window", None)
+            if (
+                attached
+                and history_window is not None
+                and history_window.isVisible()
+            ):
+                history_window.refresh()
+        except OSError as exc:
+            print(f"[History] 语音归档失败：{exc}")
+            debug_log(
+                "History",
+                "语音归档失败",
+                {"audio_path": audio_path, "error": str(exc)},
+            )
 
     def _remember_reply_history_segments(self, segments: list[ChatSegment]) -> None:
         clean_segments = [segment for segment in segments if segment.text.strip()]
@@ -883,7 +1074,13 @@ class PetWindow(QWidget):
         self._apply_speech_font()
         self.input_edit.setFont(text_font)
         self.screenshot_button.setFont(button_font)
-        self.send_button.setFont(button_font)
+        self.voice_button.setFont(button_font)
+
+    def _apply_ui_theme(self, ui_theme: str) -> None:
+        self.ui_theme = ui_theme
+        self.setStyleSheet(build_pet_window_stylesheet(ui_theme))
+        if self.history_window is not None:
+            self.history_window.set_ui_theme(ui_theme)
 
     def _apply_speech_font(self) -> None:
         if self.subtitle_language == SUBTITLE_LANGUAGE_ZH:
@@ -929,7 +1126,6 @@ class PetWindow(QWidget):
                     self.input_edit,
                     self.voice_button,
                     self.screenshot_button,
-                    self.send_button,
                 ]
             )
         return tuple(targets)
@@ -966,10 +1162,11 @@ class PetWindow(QWidget):
     def _apply_mouse_passthrough(self, locked: bool) -> None:
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         apply_locked_mouse_transparency(self, locked)
-        apply_locked_window_region(self, locked)
-        if locked:
-            QTimer.singleShot(0, lambda: apply_locked_window_region(self, True))
-            QTimer.singleShot(100, lambda: apply_locked_window_region(self, True))
+        self._refresh_window_hit_region()
+
+    def _refresh_window_hit_region(self) -> None:
+        refresh_window_hit_region(self)
+        QTimer.singleShot(0, lambda: refresh_window_hit_region(self))
 
     def _toggle_ui_locked(self, checked: bool) -> None:
         self._set_ui_locked(checked)
@@ -1036,10 +1233,10 @@ class PetWindow(QWidget):
                 self.input_edit,
                 self.voice_button,
                 self.screenshot_button,
-                self.send_button,
             ):
                 widget.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
                 widget.installEventFilter(self)
+        self._update_proactive_care_hint()
         self._layout_stage()
 
     def _layout_music_lyrics_overlay(
@@ -1101,9 +1298,10 @@ class PetWindow(QWidget):
             ctrl.input_overlay.raise_()
 
         if not controls_visible:
+            self._refresh_window_hit_region()
             return
 
-        bubble_width = min(BUBBLE_MAX_WIDTH, width - 80)
+        bubble_width = _bubble_layout_width(width, self.panel_width_percent)
         bubble_x = (width - bubble_width) // 2
         bubble_y = (
             height
@@ -1119,6 +1317,7 @@ class PetWindow(QWidget):
         self.input_bar.setGeometry(QRect(bubble_x, input_y, bubble_width, INPUT_BAR_HEIGHT))
         self._update_input_backdrop_geometry()
         self.input_bar.raise_()
+        self._refresh_window_hit_region()
 
     def _update_input_backdrop_geometry(self) -> None:
         self.input_bar.layout().activate()
@@ -1137,13 +1336,9 @@ class PetWindow(QWidget):
     def _build_menu(self) -> QMenu:
         menu = build_pet_tray_menu(
             self,
-            chinese_subtitles_checked=self.subtitle_language == SUBTITLE_LANGUAGE_ZH,
-            free_access_checked=self.free_access_enabled,
             ui_locked_checked=self.ui_locked,
             interactions_enabled=not getattr(self, "startup_initializing", False),
             on_hide=self.hide,
-            on_toggle_chinese_subtitles=self._toggle_chinese_subtitles,
-            on_toggle_free_access=self._toggle_free_access,
             on_toggle_ui_locked=self._toggle_ui_locked,
             on_show_history=self.show_history,
             on_show_settings=self.show_settings,
@@ -1168,11 +1363,19 @@ class PetWindow(QWidget):
             expression_menu.addAction(placeholder)
         else:
             widget = controller.live2d_widget
-            expression_ids = widget.list_expression_ids()
-            current = controller.current_expression
+            live2d_config = controller.live2d_config
+            available_ids = set(widget.list_expression_ids())
+            presets = build_manual_expression_presets(live2d_config, available_ids)
             ready = widget.is_ready()
-            if not expression_ids:
+            if not available_ids:
                 placeholder = QAction("（未找到表情文件 *.exp3.json）", menu)
+                placeholder.setEnabled(False)
+                expression_menu.addAction(placeholder)
+            elif not presets:
+                placeholder = QAction(
+                    "（请在 character.json 配置 live2d.tone_expressions 或 expression_presets）",
+                    menu,
+                )
                 placeholder.setEnabled(False)
                 expression_menu.addAction(placeholder)
             else:
@@ -1181,14 +1384,38 @@ class PetWindow(QWidget):
                     status.setEnabled(False)
                     expression_menu.addAction(status)
                     expression_menu.addSeparator()
-                for expression_id in expression_ids:
-                    action = QAction(expression_id, menu)
+                for preset in presets:
+                    action = QAction(preset_menu_label(preset), menu)
                     action.setCheckable(True)
-                    action.setChecked(expression_id == current)
+                    action.setChecked(controller.is_expression_preset_active(preset))
                     action.triggered.connect(
-                        lambda _checked=False, eid=expression_id: self._select_live2d_expression(eid)
+                        lambda _checked=False, selected=preset: self._select_live2d_expression_preset(
+                            selected
+                        )
                     )
                     expression_menu.addAction(action)
+                advanced_ids = extra_expression_ids(available_ids, presets)
+                if advanced_ids:
+                    advanced_menu = QMenu("更多表情文件…", expression_menu)
+                    for expression_id in advanced_ids:
+                        advanced_action = QAction(expression_id, advanced_menu)
+                        advanced_action.setCheckable(True)
+                        advanced_action.setChecked(
+                            controller.is_expression_preset_active(
+                                CharacterExpressionPreset(
+                                    label=expression_id,
+                                    expression=expression_id,
+                                )
+                            )
+                        )
+                        advanced_action.triggered.connect(
+                            lambda _checked=False, eid=expression_id: self._select_live2d_expression(
+                                eid
+                            )
+                        )
+                        advanced_menu.addAction(advanced_action)
+                    expression_menu.addSeparator()
+                    expression_menu.addMenu(advanced_menu)
 
         if quit_action is not None:
             menu.insertSeparator(quit_action)
@@ -1197,18 +1424,31 @@ class PetWindow(QWidget):
             menu.addSeparator()
             menu.addMenu(expression_menu)
 
-    def _select_live2d_expression(self, expression_id: str) -> None:
+    def _select_live2d_expression_preset(self, preset: CharacterExpressionPreset) -> None:
         controller = self.portrait_controller
         if not isinstance(controller, Live2DPortraitController):
             return
-        if not controller.apply_expression(expression_id):
+        if not controller.apply_expression_preset(preset):
             QMessageBox.warning(
                 self,
                 "表情切换失败",
-                f"未找到表情「{expression_id}」，请检查模型目录中的 .exp3.json 文件。",
+                f"未找到表情组合「{preset.label}」，请检查 character.json 与模型目录。",
             )
             return
-        debug_log("Live2D", "菜单切换表情", {"expression": expression_id})
+        debug_log(
+            "Live2D",
+            "菜单切换表情组合",
+            {
+                "label": preset.label,
+                "expression": preset.expression,
+                "overlays": list(preset.overlays),
+            },
+        )
+
+    def _select_live2d_expression(self, expression_id: str) -> None:
+        self._select_live2d_expression_preset(
+            CharacterExpressionPreset(label=expression_id, expression=expression_id)
+        )
 
     @Slot()
     def _confirm_restart_application(self) -> None:
@@ -1303,6 +1543,7 @@ class PetWindow(QWidget):
 
     def _mark_user_activity(self) -> None:
         self.last_user_activity_at = time.perf_counter()
+        self._update_proactive_care_hint()
 
     @Slot()
     def _handle_return_pressed(self) -> None:
@@ -1311,24 +1552,46 @@ class PetWindow(QWidget):
         self._begin_interaction("return_pressed")
         self.send_message("return_pressed")
 
-    @Slot()
-    def _handle_send_button_clicked(self) -> None:
-        if getattr(self, "startup_initializing", False):
-            return
-        self._begin_interaction("send_button_clicked")
-        self.send_message("send_button_clicked")
-
     def _voice_input_available(self) -> bool:
-        return (
-            self.stt_settings.enabled
-            and not getattr(self, "startup_initializing", False)
-            and self.worker_thread is None
-        )
+        return self._voice_unavailable_reason() is None
+
+    def _voice_unavailable_reason(self) -> str | None:
+        if not self.stt_settings.enabled:
+            return "语音输入已在设置中关闭。"
+        if getattr(self, "startup_initializing", False):
+            return "应用仍在初始化，请稍候再试。"
+        if self._voice_transcribe_thread is not None:
+            return "正在识别上一条语音，请稍候。"
+        if self.worker_thread is not None:
+            return "正在处理上一条消息，请稍后再用语音输入。"
+        return None
 
     @Slot()
+    def _on_live2d_long_press_start(self) -> None:
+        self._mark_user_activity()
+        if not self._voice_input_available():
+            return
+        if self._voice_recording or self._voice_rec_starting:
+            return
+        self._voice_from_long_press = True
+        self._start_voice_recording()
+
+    def _on_live2d_long_press_end(self) -> None:
+        if not self._voice_from_long_press:
+            return
+        self._voice_from_long_press = False
+        if self._voice_recording:
+            self._stop_voice_recording()
+            return
+        if self._voice_rec_starting:
+            self._voice_long_press_cancel_pending = True
+
     def _handle_voice_button_clicked(self) -> None:
         self._mark_user_activity()
         if not self._voice_input_available():
+            reason = self._voice_unavailable_reason()
+            if reason:
+                self.set_speech(reason)
             return
         if self._voice_recording:
             self._stop_voice_recording()
@@ -1350,6 +1613,15 @@ class PetWindow(QWidget):
     @Slot(bool, str)
     def _on_voice_recording_started(self, ok: bool, message: str) -> None:
         self._voice_rec_starting = False
+        if self._voice_long_press_cancel_pending:
+            self._voice_long_press_cancel_pending = False
+            if ok:
+                self._voice_recording = True
+                self._update_voice_button()
+                self._stop_voice_recording()
+            else:
+                self._update_voice_button()
+            return
         if not ok:
             if self._voice_recording:
                 try:
@@ -1367,6 +1639,7 @@ class PetWindow(QWidget):
     def _stop_voice_recording(self) -> None:
         if not self._voice_recording:
             return
+        self._voice_from_long_press = False
         self._voice_recording = False
         self._update_voice_button()
         self.set_speech("正在识别…")
@@ -1389,6 +1662,7 @@ class PetWindow(QWidget):
             return
         self.input_edit.setText(result.text)
         self.input_edit.setFocus()
+        self.set_speech(self.character_profile.initial_message)
         self._begin_interaction("voice_input")
         self.send_message("voice_input")
 
@@ -1541,6 +1815,37 @@ class PetWindow(QWidget):
         if not text and manual_observation is not None:
             text = MANUAL_SCREENSHOT_DEFAULT_TEXT
 
+        outbound_target: NapCatInboundMessage | None = None
+        outbound_directive = parse_outbound_directive(text) if text else None
+        if outbound_directive is not None:
+            bridge = getattr(self, "napcat_bridge", None)
+            if bridge is None:
+                QMessageBox.information(
+                    self,
+                    "QQ",
+                    "QQ 接入未启用，无法使用 @收件人 发送。",
+                )
+                self._end_interaction("ignored")
+                return
+            outbound_target = bridge.resolve_outbound_recipient(outbound_directive.recipient)
+            if outbound_target is None:
+                known_names = bridge.known_contact_names()
+                hint = "、".join(known_names[:5]) if known_names else "暂无，可先让对方发一条消息"
+                QMessageBox.warning(
+                    self,
+                    "QQ",
+                    f"找不到收件人「{outbound_directive.recipient}」。\n"
+                    f"可用昵称：{hint}\n"
+                    "也可使用 @QQ号、@private:QQ号 或 @group:群号。",
+                )
+                self._end_interaction("ignored")
+                return
+            text = outbound_directive.text
+            self._outbound_napcat_target = outbound_target
+            self.subtitle_controller.show_text_immediately(
+                format_outbound_pet_display(outbound_target, text)
+            )
+
         self._set_pending_tool_action(None)
         exit_reply_history_review = getattr(self, "_exit_reply_history_review", None)
         if exit_reply_history_review is not None:
@@ -1566,14 +1871,24 @@ class PetWindow(QWidget):
         else:
             request_user_message: dict[str, Any] = {"role": "user", "content": text}
             recorded_user_text = text
+            if outbound_target is not None:
+                recorded_user_text = format_outbound_pet_display(outbound_target, text)
 
-        request_messages = _add_visual_context_to_messages(
-            [*self.messages, request_user_message],
-            user_text=text,
-            store=getattr(self, "visual_observation_store", None),
-            has_current_image=manual_observation is not None,
-        )
-        request_messages = trim_messages_for_model(request_messages)
+        if outbound_target is not None:
+            bridge = getattr(self, "napcat_bridge", None)
+            if bridge is None:
+                self._outbound_napcat_target = None
+                self._end_interaction("ignored")
+                return
+            request_messages = bridge.record_outbound_user_message(outbound_target, text)
+        else:
+            request_messages = _add_visual_context_to_messages(
+                [*self.messages, request_user_message],
+                user_text=text,
+                store=getattr(self, "visual_observation_store", None),
+                has_current_image=manual_observation is not None,
+            )
+            request_messages = trim_messages_for_model(request_messages)
         debug_log(
             "PetWindow",
             "用户消息入队",
@@ -1660,6 +1975,12 @@ class PetWindow(QWidget):
         )
         self.messages.append({"role": "assistant", "content": reply.text})
         self._record_assistant_reply_history(reply)
+        if (
+            reply.segments
+            and reply.segments[0].text.strip()
+            and not self.subtitle_controller.is_reply_sequence_active()
+        ):
+            self.voice_playback_controller.prepare_first_segment(reply.segments[0])
 
     @Slot(object)
     def _handle_reply(self, result: AgentResult) -> None:
@@ -1682,10 +2003,21 @@ class PetWindow(QWidget):
             self._log_interaction_stage("screen_observation_followup_queued")
             return
         reply = result.reply
+        pending_napcat = self._pending_napcat_message
+        outbound_napcat = self._outbound_napcat_target
+        self._pending_napcat_message = None
+        self._outbound_napcat_target = None
         self.messages.append({"role": "assistant", "content": reply.text})
+        self._pending_summary_turn = SessionTurn(
+            user_text=self._last_user_message_text,
+            assistant_text=reply.text,
+        )
         self._record_assistant_reply_history(reply, _debug=result._debug)
         self._log_interaction_stage("assistant_message_recorded")
         self._show_reply_segments(reply.segments)
+        napcat_target = pending_napcat or outbound_napcat
+        if napcat_target is not None:
+            self._deliver_napcat_reply(napcat_target, result)
         self._apply_pending_action_from_result(result)
 
     def _queue_screen_observation_followup(self, result: AgentResult) -> bool:
@@ -1867,6 +2199,7 @@ class PetWindow(QWidget):
         return True
 
     def _record_user_message(self, text: str) -> None:
+        self._last_user_message_text = text.strip()
         self.messages.append({"role": "user", "content": text})
         self._record_history("user", text)
 
@@ -1981,6 +2314,10 @@ class PetWindow(QWidget):
         self.subtitle_controller.clear_queued_reply_segments_for_action_resolution()
 
     @Slot()
+    def _on_proactive_care_timer(self) -> None:
+        self._update_proactive_care_hint()
+        self._check_proactive_care()
+
     def _check_proactive_care(self) -> None:
         if getattr(self, "startup_initializing", False):
             return
@@ -1999,12 +2336,50 @@ class PetWindow(QWidget):
             *_build_proactive_visual_observation_jobs(event),
         ]
         self.last_proactive_care_at = now
-        self._record_history("system", PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER)
+        if self._proactive_screen_context_allowed() and self.proactive_screen_contexts:
+            self._record_history("system", PROACTIVE_SCREEN_CONTEXT_HISTORY_MARKER)
+        else:
+            self._record_history("system", PROACTIVE_TOPIC_HISTORY_MARKER)
         self._clear_proactive_screen_context_batch("sent")
         self._run_event_worker(event)
+        self._update_proactive_care_hint()
+
+    def _default_input_placeholder(self) -> str:
+        base = f"和{self.character_profile.display_name}说点什么..."
+        if getattr(self, "napcat_bridge", None) is not None:
+            return f"{base} 用 @昵称 或 @QQ号 发给QQ"
+        return base
+
+    def _proactive_care_countdown_seconds(self) -> int | None:
+        return compute_proactive_care_countdown_seconds(
+            settings=self.proactive_care_settings,
+            now=time.perf_counter(),
+            last_user_activity_at=self.last_user_activity_at,
+            last_proactive_care_at=self.last_proactive_care_at,
+            screen_context_allowed=self._proactive_screen_context_allowed(),
+            screen_context_count=len(self.proactive_screen_contexts),
+            screen_context_batch_started_at=self.proactive_screen_context_batch_started_at,
+            last_proactive_screen_context_at=self.last_proactive_screen_context_at,
+        )
+
+    def _update_proactive_care_hint(self) -> None:
+        countdown = self._proactive_care_countdown_seconds()
+        display_name = self.character_profile.display_name
+        if countdown is None or getattr(self, "startup_initializing", False):
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.setToolTip(display_name)
+            if hasattr(self, "input_edit"):
+                self.input_edit.setPlaceholderText(self._default_input_placeholder())
+            return
+
+        hint = format_proactive_care_countdown_hint(countdown)
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.setToolTip(f"{display_name}\n主动搭话：{hint}")
+        if hasattr(self, "input_edit") and not self.input_edit.text().strip():
+            self.input_edit.setPlaceholderText(f"{hint}…")
 
     def _can_run_proactive_care(self) -> bool:
-        if not self._proactive_screen_context_allowed():
+        if not self._proactive_care_enabled():
             return False
         if (
             self.worker_thread is not None
@@ -2013,13 +2388,12 @@ class PetWindow(QWidget):
             or self.pending_tool_action is not None
             or self.pending_screen_observation_messages is not None
             or self.screen_observation_followup_in_progress
-            or self.active_interaction_id
         ):
             return False
         if self.input_edit.text().strip() or self.speech_timer.isActive():
             return False
         subtitle_controller = getattr(self, "subtitle_controller", None)
-        if subtitle_controller is not None and subtitle_controller.current_segment_in_progress():
+        if subtitle_controller is not None and subtitle_controller.is_reply_sequence_active():
             return False
         if subtitle_controller is None and getattr(self, "current_segment_sequence_id", None) is not None and (
             not getattr(self, "current_segment_speech_done", True)
@@ -2080,14 +2454,31 @@ class PetWindow(QWidget):
         )
 
     def _should_send_proactive_care_batch(self, now: float) -> bool:
-        if not self.proactive_screen_contexts:
+        settings = self.proactive_care_settings.normalized()
+        cooldown_seconds = settings.cooldown_minutes * 60
+        check_interval_seconds = settings.check_interval_minutes * 60
+        if (
+            self.last_proactive_care_at is not None
+            and now - self.last_proactive_care_at + PROACTIVE_TIMER_DUE_GRACE_SECONDS
+            < cooldown_seconds
+        ):
             return False
-        if self.proactive_screen_context_batch_started_at is None:
+        if (
+            now - self.last_user_activity_at + PROACTIVE_TIMER_DUE_GRACE_SECONDS
+            < check_interval_seconds
+        ):
             return False
-        return (
-            now - self.proactive_screen_context_batch_started_at
-            >= self.proactive_care_settings.cooldown_minutes * 60
-        )
+
+        if self._proactive_screen_context_allowed():
+            if not self.proactive_screen_contexts:
+                return False
+            if self.proactive_screen_context_batch_started_at is None:
+                return False
+            return (
+                now - self.proactive_screen_context_batch_started_at
+                >= cooldown_seconds
+            )
+        return True
 
     def _build_proactive_care_event(self, now: float | None = None) -> AgentEvent:
         now = time.perf_counter() if now is None else now
@@ -2123,16 +2514,21 @@ class PetWindow(QWidget):
             )
         return AgentEvent(type="proactive_check", payload=payload)
 
+    def _proactive_care_enabled(self) -> bool:
+        return self.proactive_care_settings.normalized().allows_proactive_topics()
+
     def _proactive_screen_context_allowed(self) -> bool:
-        return self.proactive_care_settings.allows_screen_context()
+        return self.proactive_care_settings.normalized().allows_screen_context()
 
     def _sync_proactive_care_timer(self) -> None:
-        if self._proactive_screen_context_allowed():
+        if self._proactive_care_enabled():
             if not self.proactive_care_timer.isActive():
                 self.proactive_care_timer.start()
+            self._update_proactive_care_hint()
         else:
             self.proactive_care_timer.stop()
             self._clear_proactive_screen_context_batch("disabled")
+            self._update_proactive_care_hint()
 
     def _clear_proactive_screen_context_batch(self, reason: str) -> None:
         had_batch = bool(self.proactive_screen_contexts)
@@ -2195,6 +2591,7 @@ class PetWindow(QWidget):
         self._clear_active_event()
         if not result.reply.text.strip() and not result.reply.translation.strip() and not result.actions:
             self._log_interaction_stage("event_silent", {"event_type": event.type if event else ""})
+            self._end_interaction("event_silent")
             return
         self._consume_agent_result(result)
         if reminder_id is not None:
@@ -2236,6 +2633,7 @@ class PetWindow(QWidget):
                 )
             )
             self._consume_agent_result(result)
+        self._end_interaction("error")
         if reminder_id is not None:
             self._mark_reminder_completed(reminder_id)
 
@@ -2254,6 +2652,20 @@ class PetWindow(QWidget):
     @Slot(str)
     def _handle_error(self, message: str) -> None:
         self._log_interaction_stage("worker_error", {"message": message})
+        pending_napcat = self._pending_napcat_message
+        outbound_napcat = self._outbound_napcat_target
+        napcat_target = pending_napcat or outbound_napcat
+        if napcat_target is not None:
+            bridge = getattr(self, "napcat_bridge", None)
+            if bridge is not None:
+                bridge.deliver_error(napcat_target, message)
+            self._pending_napcat_message = None
+            self._outbound_napcat_target = None
+            self._pending_napcat_voice_message = None
+            self._record_history("error", message)
+            self.subtitle_controller.cancel_reply_flow(f"QQ 处理失败：{message}")
+            self._end_interaction("error")
+            return
         if self.messages and self.messages[-1]["role"] == "user":
             self.messages.pop()
         self._record_history("error", message)
@@ -2484,7 +2896,7 @@ class PetWindow(QWidget):
         self.voice_playback_controller.set_provider(services.tts_provider)
         self._connect_tts_error_signal(services.tts_provider)
         self._connect_live2d_tts_signals(services.tts_provider)
-        self._warm_up_tts_playback(services.tts_provider)
+        self._warm_up_tts(services.tts_provider)
         self.tool_registry = services.tool_registry
         self.free_access_enabled = self.tool_registry.free_access_enabled
         self.agent_runtime.tools = services.tool_registry
@@ -2493,12 +2905,16 @@ class PetWindow(QWidget):
         self.mcp_settings = services.mcp_settings
 
         self.startup_initializing = False
-        self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
         self.subtitle_controller.cancel_reply_flow(self.character_profile.initial_message)
         self._set_busy(False)
         self.reminder_timer.start()
         self._sync_proactive_care_timer()
+<<<<<<< HEAD
         #QTimer.singleShot(0, self._maybe_start_memory_backfill)
+=======
+        self._start_napcat_bridge_if_enabled()
+        QTimer.singleShot(0, self._maybe_start_memory_backfill)
+>>>>>>> 27923bbe5bf8ca0a0f37de64cfaef8e5912c57b2
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log(
@@ -2525,13 +2941,214 @@ class PetWindow(QWidget):
     @Slot(str)
     def handle_deferred_startup_failed(self, error: str) -> None:
         self.startup_initializing = False
-        self.input_edit.setPlaceholderText(f"和{self.character_profile.display_name}说点什么...")
         self.subtitle_controller.cancel_reply_flow(f"初始化失败：{error}")
         self._set_busy(False)
+        self._sync_proactive_care_timer()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log("Startup", "后台启动服务失败", {"error": error})
         print(f"[Startup] 后台初始化失败：{error}")
+
+    @Slot(object, object)
+    def _on_napcat_chat_requested(
+        self,
+        message: NapCatInboundMessage,
+        request_messages: list[dict[str, Any]],
+    ) -> None:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        if self.worker_thread is not None:
+            napcat_log("忙碌回复", {"session": message.session_id, "reason": "Worker 已占用"})
+            bridge.send_busy_reply(message)
+            return
+        self._pending_napcat_message = message
+        display_text = format_inbound_pet_display(message)
+        self.subtitle_controller.show_text_immediately(display_text)
+        self._record_history("user", f"[{message.sender_name}] {message.text}")
+        debug_log(
+            "PetWindow",
+            "处理 QQ 聊天请求",
+            {
+                "session_id": message.session_id,
+                "message_count": len(request_messages),
+            },
+        )
+        self._start_chat_worker(request_messages)
+
+    def _deliver_napcat_reply(self, message: NapCatInboundMessage, result: AgentResult) -> None:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        napcat_settings = self.settings_service.load_napcat_settings()
+        prefer_translation = self.subtitle_language == SUBTITLE_LANGUAGE_ZH
+        reply_text = format_agent_reply_text(
+            result.reply.segments,
+            prefer_translation=prefer_translation,
+        )
+        send_text = napcat_settings.reply_sends_text()
+        send_voice = napcat_settings.reply_sends_voice() and bool(result.reply.segments)
+        if send_text:
+            bridge.deliver_reply(message, reply_text, send_text=True)
+        elif send_voice:
+            bridge.note_assistant_reply(message, reply_text)
+            bridge.release_session(message.session_id)
+            napcat_log(
+                "已排队 QQ 语音",
+                {"session": message.session_id, "sender": message.sender_name},
+            )
+        else:
+            bridge.deliver_reply(message, reply_text, send_text=True)
+        if send_voice:
+            self._pending_napcat_voice_message = message
+
+    def _forward_segment_voice_to_qq(self, segment: ChatSegment) -> None:
+        message = self._pending_napcat_voice_message
+        if message is None:
+            return
+        if not self.settings_service.load_napcat_settings().reply_sends_voice():
+            return
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        text = segment.text.strip()
+        if not text or should_skip_tts_text(
+            text,
+            str(getattr(getattr(self.tts_provider, "settings", None), "text_lang", "ja")),
+        ):
+            napcat_log("跳过 QQ 语音", {"session": message.session_id, "text": text, "reason": "无可朗读文本"})
+            return
+        audio_path = self._resolve_qq_voice_audio_path(segment)
+        if audio_path is None:
+            napcat_log("跳过 QQ 语音", {"session": message.session_id, "text": text, "reason": "无可用音频"})
+            return
+        try:
+            export_path = export_qq_voice_audio(audio_path, self.base_dir)
+        except OSError as exc:
+            napcat_log("QQ 语音导出失败", {"session": message.session_id, "error": str(exc)})
+            debug_log("NapCat", "QQ 语音导出失败", {"error": str(exc), "source": str(audio_path)})
+            return
+        bridge.send_voice_record(message, export_path)
+
+    def _resolve_qq_voice_audio_path(self, segment: ChatSegment) -> Path | None:
+        active_path = self._active_segment_audio_path
+        if active_path:
+            source = Path(active_path)
+            if source.exists():
+                return source
+        synthesize = getattr(self.tts_provider, "synthesize_to_path", None)
+        if not callable(synthesize):
+            return None
+        tone = segment.tone.strip() or None
+        try:
+            return synthesize(segment.text, tone)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "NapCat",
+                "QQ 语音合成异常",
+                {"text": segment.text, "error": str(exc)},
+            )
+            return None
+
+    def _is_napcat_host_busy(self) -> bool:
+        if getattr(self, "startup_initializing", False):
+            return True
+        return self.worker_thread is not None
+
+    def _start_napcat_bridge_if_enabled(self) -> None:
+        self._stop_napcat_bridge()
+        settings = self.settings_service.load_napcat_settings()
+        if not settings.enabled:
+            return
+        bridge: NapCatBridge | None = None
+        try:
+            bridge = NapCatBridge(
+                settings,
+                is_busy=self._is_napcat_host_busy,
+                parent=self,
+            )
+            bridge.chat_requested.connect(self._on_napcat_chat_requested)
+            bridge.connection_changed.connect(self._handle_napcat_connection_changed)
+            if bridge.start():
+                self.napcat_bridge = bridge
+                if hasattr(self, "input_edit"):
+                    self.input_edit.setPlaceholderText(self._default_input_placeholder())
+                for index, url in enumerate(settings.websocket_url_hint_lines()):
+                    label = "请在 NapCat 填写" if index == 0 else "同机可试"
+                    napcat_log(f"{label}：{url}")
+                return
+            error = bridge.last_error or "未知错误"
+            bridge.deleteLater()
+            napcat_log("启动失败", {"error": error})
+            QMessageBox.warning(
+                self,
+                "NapCat",
+                f"QQ 接入未启动：{error}\n\n"
+                "请确认 6199 端口未被 AstrBot/其他桌宠占用，关闭冲突程序后重试。",
+            )
+        except Exception as exc:  # noqa: BLE001
+            if bridge is not None:
+                bridge.deleteLater()
+            self.napcat_bridge = None
+            napcat_log("启动失败", {"error": str(exc)})
+            debug_log("NapCat", "桥接启动失败", {"error": str(exc)})
+
+    @Slot(int)
+    def _handle_napcat_connection_changed(self, client_count: int) -> None:
+        if hasattr(self, "input_edit"):
+            self.input_edit.setPlaceholderText(self._default_input_placeholder())
+        if client_count > 0:
+            napcat_log(f"NapCat 已连接（{client_count} 个客户端）")
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.showMessage(
+                    "NapCat",
+                    f"QQ 已连接（{client_count}）",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    4000,
+                )
+        else:
+            napcat_log("NapCat 已断开，等待重新连接…")
+            if hasattr(self, "tray_icon"):
+                self.tray_icon.showMessage(
+                    "NapCat",
+                    "QQ 已断开，等待 NapCat 重连…",
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    4000,
+                )
+        console = getattr(self, "_napcat_console_window", None)
+        if isinstance(console, NapCatConsoleWindow):
+            console.refresh_connection_status()
+
+    def show_napcat_console(self) -> None:
+        console = getattr(self, "_napcat_console_window", None)
+        if not isinstance(console, NapCatConsoleWindow):
+            console = NapCatConsoleWindow(
+                client_count_provider=self._napcat_client_count,
+                bridge_running_provider=self._napcat_bridge_running,
+                parent=self,
+            )
+            self._napcat_console_window = console
+        console.refresh_connection_status()
+        console.show()
+        console.raise_()
+        console.activateWindow()
+
+    def _napcat_client_count(self) -> int:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return 0
+        return int(getattr(bridge, "client_count", 0) or 0)
+
+    def _napcat_bridge_running(self) -> bool:
+        return getattr(self, "napcat_bridge", None) is not None
+
+    def _stop_napcat_bridge(self) -> None:
+        bridge = getattr(self, "napcat_bridge", None)
+        if bridge is None:
+            return
+        bridge.stop()
+        bridge.deleteLater()
+        self.napcat_bridge = None
 
     def _move_tts_provider_to_ui_thread(self, provider: TTSProvider) -> None:
         if not isinstance(provider, QObject):
@@ -2598,18 +3215,23 @@ class PetWindow(QWidget):
 
     @Slot(str)
     def _on_tts_playback_started(self, audio_path: str) -> None:
+        self._active_segment_audio_path = audio_path
         if not isinstance(self.portrait_controller, Live2DPortraitController):
             return
-        self.portrait_controller.begin_speech(audio_path)
+        self.portrait_controller.attach_speech_audio(audio_path)
 
     @Slot()
     def _on_tts_playback_ended(self) -> None:
         if not isinstance(self.portrait_controller, Live2DPortraitController):
             return
-        self.portrait_controller.end_speech()
+        self.portrait_controller.detach_speech_audio()
 
-    def _warm_up_current_tts_playback(self) -> None:
-        self._warm_up_tts_playback(self.tts_provider)
+    def _warm_up_current_tts(self) -> None:
+        self._warm_up_tts(self.tts_provider)
+
+    def _warm_up_tts(self, provider: TTSProvider) -> None:
+        self._warm_up_tts_playback(provider)
+        self._warm_up_tts_synthesis(provider)
 
     def _warm_up_tts_playback(self, provider: TTSProvider) -> None:
         warm_up = getattr(provider, "warm_up_playback", None)
@@ -2621,6 +3243,22 @@ class PetWindow(QWidget):
             debug_log(
                 "TTS",
                 "播放器预热请求失败",
+                {
+                    "provider": type(provider).__name__,
+                    "error": str(exc),
+                },
+            )
+
+    def _warm_up_tts_synthesis(self, provider: TTSProvider) -> None:
+        warm_up = getattr(provider, "warm_up_synthesis", None)
+        if not callable(warm_up):
+            return
+        try:
+            warm_up()
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                "TTS",
+                "合成预热请求失败",
                 {
                     "provider": type(provider).__name__,
                     "error": str(exc),
@@ -2646,17 +3284,19 @@ class PetWindow(QWidget):
         )
         if hasattr(self, "voice_button"):
             self.voice_button.setEnabled(voice_enabled)
-        self.send_button.setEnabled(controls_enabled)
         tool_confirmation_panel = getattr(self, "tool_confirmation_panel", None)
         if tool_confirmation_panel is not None:
             tool_confirmation_panel.set_busy(busy or startup_initializing)
         else:
             self.confirm_action_button.setEnabled(controls_enabled)
             self.cancel_action_button.setEnabled(controls_enabled)
-        if startup_initializing:
-            self.send_button.setText("初始化")
-        else:
-            self.send_button.setText("等待" if busy else "发送")
+        if hasattr(self, "input_edit") and not self.input_edit.text().strip():
+            if startup_initializing:
+                pass
+            elif busy:
+                self.input_edit.setPlaceholderText("等待回复中…")
+            else:
+                self._update_proactive_care_hint()
         self._log_interaction_stage("set_busy", {"busy": busy})
         update_reply_history_buttons = getattr(self, "_update_reply_history_buttons", None)
         if update_reply_history_buttons is not None:
@@ -2692,6 +3332,39 @@ class PetWindow(QWidget):
             self.show()
             self.raise_()
 
+    def _resolve_history_audio_path(self, entry: ChatHistoryEntry) -> Path | None:
+        audio_path = entry.audio_path.strip()
+        if not audio_path:
+            return None
+        resolved = Path(audio_path)
+        if not resolved.is_absolute():
+            resolved = self.base_dir / resolved
+        return resolved if resolved.exists() else None
+
+    def _play_history_entry_audio(self, entry: ChatHistoryEntry) -> None:
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "播放不可用", "当前正在处理回复，请稍后再试。")
+            return
+        if self.subtitle_controller.is_reply_sequence_active():
+            QMessageBox.information(self, "播放不可用", "当前正在播报回复，请稍后再试。")
+            return
+
+        archived_audio = self._resolve_history_audio_path(entry)
+        if archived_audio is not None:
+            if self.history_audio_player.play(archived_audio):
+                return
+            QMessageBox.warning(self, "播放失败", "历史语音文件无法播放，将尝试重新合成。")
+
+        text = _history_entry_tts_text(entry)
+        if not text:
+            QMessageBox.information(self, "无法播放", "这条记录没有可朗读的内容。")
+            return
+        tone = entry.tone.strip() or None
+        try:
+            self.tts_provider.speak(text, tone)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "播放失败", f"语音合成失败：{exc}")
+
     @Slot()
     def show_history(self) -> None:
         if self.history_window is None:
@@ -2699,8 +3372,12 @@ class PetWindow(QWidget):
                 self.history_store,
                 self.subtitle_language,
                 self._save_history_to_memory_and_clear,
+                self._play_history_entry_audio,
                 self,
+                ui_theme=self.ui_theme,
             )
+        self.history_window.set_play_audio_handler(self._play_history_entry_audio)
+        self.history_window.set_ui_theme(self.ui_theme)
         self.history_window.set_subtitle_language(self.subtitle_language)
         self.history_window.refresh()
         self.history_window.show()
@@ -2764,6 +3441,8 @@ class PetWindow(QWidget):
             screen_observation_settings=self.settings_service.load_screen_observation_settings(),
             reminder_settings=self.reminder_settings,
             memory_curation_settings=self.memory_curation_settings,
+            napcat_settings=self.settings_service.load_napcat_settings(),
+            on_open_napcat_console=self.show_napcat_console,
             subtitle_language=self.subtitle_language,
             free_access_enabled=self.free_access_enabled,
         )
@@ -2835,6 +3514,12 @@ class PetWindow(QWidget):
             self.settings_service.save_memory_curation_settings(
                 dialog.result_memory_curation_settings
             )
+            if dialog.result_ai_feature_settings is not None:
+                self.settings_service.save_ai_feature_settings(
+                    dialog.result_ai_feature_settings
+                )
+            if dialog.result_napcat_settings is not None:
+                self.settings_service.save_napcat_settings(dialog.result_napcat_settings)
             self._save_system_config_values(
                 "ui",
                 {
@@ -2849,8 +3534,9 @@ class PetWindow(QWidget):
                     "lyric_sync_offset_seconds": (
                         dialog.result_pet_ui_settings.lyric_sync_offset_seconds
                     ),
-                    "music_sing_along_enabled": (
-                        dialog.result_pet_ui_settings.music_sing_along_enabled
+                    "ui_theme": dialog.result_pet_ui_settings.ui_theme,
+                    "desktop_pet_rules_enabled": (
+                        dialog.result_pet_ui_settings.desktop_pet_rules_enabled
                     ),
                 },
             )
@@ -2871,9 +3557,12 @@ class PetWindow(QWidget):
             self._apply_screen_observation_settings(dialog.result_screen_observation_settings)
             self._apply_reminder_settings(dialog.result_reminder_settings)
             self.memory_curation_settings = dialog.result_memory_curation_settings
+            if dialog.result_ai_feature_settings is not None:
+                self._apply_ai_feature_settings(dialog.result_ai_feature_settings)
             self.debug_log_settings = dialog.result_debug_log_settings
             self.stt_settings = dialog.result_stt_settings
             self._sync_proactive_care_timer()
+            self._start_napcat_bridge_if_enabled()
             if hasattr(self, "tray_icon"):
                 self.tray_icon.setContextMenu(self._build_menu())
             return
@@ -2893,6 +3582,8 @@ class PetWindow(QWidget):
         self._apply_screen_observation_settings(dialog.result_screen_observation_settings)
         self._apply_reminder_settings(dialog.result_reminder_settings)
         self.memory_curation_settings = dialog.result_memory_curation_settings
+        if dialog.result_ai_feature_settings is not None:
+            self._apply_ai_feature_settings(dialog.result_ai_feature_settings)
         self.debug_log_settings = dialog.result_debug_log_settings
         self.stt_settings = dialog.result_stt_settings
         try:
@@ -2919,8 +3610,9 @@ class PetWindow(QWidget):
         if callable(connect_tts_error_signal):
             connect_tts_error_signal(new_tts_provider)
         self._connect_live2d_tts_signals(new_tts_provider)
-        self._warm_up_tts_playback(new_tts_provider)
+        self._warm_up_tts(new_tts_provider)
         self._apply_character(selected_profile)
+        self._start_napcat_bridge_if_enabled()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         message = "设置已保存，后续聊天和朗读将使用新配置。"
@@ -3183,6 +3875,32 @@ class PetWindow(QWidget):
             self.free_access_enabled = normalized.free_access_enabled
             self.tool_registry.set_free_access_enabled(self.free_access_enabled)
         self._apply_music_plugin_settings(normalized)
+        if normalized.ui_theme != self.ui_theme:
+            self._apply_ui_theme(normalized.ui_theme)
+        if normalized.desktop_pet_rules_enabled != self.desktop_pet_rules_enabled:
+            self.desktop_pet_rules_enabled = normalized.desktop_pet_rules_enabled
+            self.system_prompt = load_character_system_prompt(
+                self.character_profile,
+                append_desktop_pet_rules=self.desktop_pet_rules_enabled,
+            )
+            self.agent_runtime.update_character(
+                self.system_prompt,
+                self.character_profile.reply_tones,
+                self.character_profile.portrait_choices,
+            )
+        if (
+            normalized.strict_ja_zh_correspondence_enabled
+            != self.strict_ja_zh_correspondence_enabled
+        ):
+            self.strict_ja_zh_correspondence_enabled = (
+                normalized.strict_ja_zh_correspondence_enabled
+            )
+            self.agent_runtime.set_strict_ja_zh_correspondence_enabled(
+                self.strict_ja_zh_correspondence_enabled
+            )
+        if normalized.panel_width_percent != self.panel_width_percent:
+            self.panel_width_percent = normalized.panel_width_percent
+            self._apply_panel_layout()
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
 
@@ -3206,32 +3924,7 @@ class PetWindow(QWidget):
             self.input_backdrop.show()
         self._ui_controls_visible_applied = False
         self._layout_stage()
-
-    def _is_music_sing_along_blocked(self) -> bool:
-        if getattr(self, "startup_initializing", False):
-            return True
-        if self.worker_thread is not None:
-            return True
-        subtitle_controller = getattr(self, "subtitle_controller", None)
-        if subtitle_controller is not None and subtitle_controller.is_reply_sequence_active():
-            return True
-        return getattr(self.tts_provider, "_current_audio", None) is not None
-
-    def _ensure_music_sing_along_controller(self) -> None:
-        if not self._using_live2d or not self.music_sing_along_enabled:
-            if self._music_sing_along_controller is not None:
-                self._music_sing_along_controller.set_enabled(False)
-            return
-        if self._music_sing_along_controller is None:
-            self._music_sing_along_controller = MusicSingAlongController(
-                get_portrait=lambda: self.portrait_controller,
-                is_blocked=self._is_music_sing_along_blocked,
-                music_source=self.music_default_source,
-                parent=self,
-            )
-        else:
-            self._music_sing_along_controller.set_music_source(self.music_default_source)
-        self._music_sing_along_controller.set_enabled(True)
+        self._update_proactive_care_hint()
 
     def _apply_music_plugin_settings(self, normalized) -> None:  # noqa: ANN001 — PetUISettings
         enabled = bool(normalized.music_plugin_enabled)
@@ -3239,7 +3932,6 @@ class PetWindow(QWidget):
         self.music_default_source = normalized.music_default_source
         set_preferred_music_source(normalized.music_default_source)
         self.lyric_sync_offset_seconds = normalized.lyric_sync_offset_seconds
-        self.music_sing_along_enabled = normalized.music_sing_along_enabled
         if enabled:
             if self.music_lyrics_overlay is None:
                 self.music_lyrics_overlay = MusicLyricsOverlay(
@@ -3253,7 +3945,6 @@ class PetWindow(QWidget):
                 )
         elif self.music_lyrics_overlay is not None:
             self.music_lyrics_overlay.hide()
-        self._ensure_music_sing_along_controller()
         self._layout_stage()
 
     def _apply_screen_observation_settings(self, settings) -> None:  # noqa: ANN001
@@ -3356,6 +4047,10 @@ class PetWindow(QWidget):
             overlay = controller.input_overlay
             overlay.bind_mouse_handler(self._handle_live2d_portrait_mouse)
             overlay.bind_tap_handler(self._trigger_live2d_tap)
+            overlay.bind_long_press_handlers(
+                self._on_live2d_long_press_start,
+                self._on_live2d_long_press_end,
+            )
             return controller
 
         if profile.live2d is not None:
@@ -3380,6 +4075,8 @@ class PetWindow(QWidget):
     def _replace_portrait_controller(self, profile: CharacterProfile) -> None:
         old_controller = getattr(self, "portrait_controller", None)
         if old_controller is not None and getattr(self, "_using_live2d", False):
+            if isinstance(old_controller, Live2DPortraitController):
+                old_controller.dispose()
             for widget in (old_controller.live2d_widget, old_controller.input_overlay):
                 widget.removeEventFilter(self)
                 widget.hide()
@@ -3393,12 +4090,12 @@ class PetWindow(QWidget):
             self._live2d_hover_ui = False
             self.input_bar.show()
             self.input_backdrop.show()
-        self._ensure_music_sing_along_controller()
         self._refresh_input_backdrop_sources()
         self._install_portrait_drag_filters()
         subtitle_controller = getattr(self, "subtitle_controller", None)
         if subtitle_controller is not None:
             subtitle_controller.preload_segment = self.portrait_controller.preload_for_segment
+        self._apply_speech_font()
 
     def _refresh_input_backdrop_sources(self) -> None:
         widgets: list[QWidget] = [self.portrait_controller.portrait_stage_widget]
@@ -3424,7 +4121,21 @@ class PetWindow(QWidget):
 
     def _apply_portrait_scale_percent(self, portrait_scale_percent: int) -> None:
         self.portrait_scale_percent = normalize_portrait_scale_percent(portrait_scale_percent)
-        self.stage_size = _stage_size_for_portrait_scale_percent(self.portrait_scale_percent)
+        self._apply_panel_layout()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        previous_size = self.stage_size
+        self._apply_panel_layout()
+        if self.stage_size != previous_size:
+            self._move_to_default_position()
+        self._refresh_window_hit_region()
+
+    def _apply_panel_layout(self) -> None:
+        self.stage_size = _stage_size_for_layout(
+            self.portrait_scale_percent,
+            self.panel_width_percent,
+        )
         self.portrait_controller.set_stage_size(self.stage_size)
         self.portrait_controller.set_portrait_scale_percent(self.portrait_scale_percent)
         self.portrait_controller.apply_current()
@@ -3433,6 +4144,8 @@ class PetWindow(QWidget):
             self._apply_ui_controls_visibility(force=True)
         else:
             self._layout_stage()
+        if (self.width(), self.height()) != self.stage_size:
+            self.resize(*self.stage_size)
 
     def _sync_stage_height_for_layout(self) -> None:
         if self._live2d_hover_ui:
@@ -3461,19 +4174,20 @@ class PetWindow(QWidget):
     def _apply_character(self, profile: CharacterProfile) -> None:
         previous_character_id = self.character_profile.id
         self.character_profile = profile
-        self.system_prompt = load_character_system_prompt(profile)
+        self.system_prompt = load_character_system_prompt(
+            profile,
+            append_desktop_pet_rules=self.desktop_pet_rules_enabled,
+        )
         self.memory_store.set_scope(profile.id)
         self.agent_runtime.update_character(self.system_prompt, profile.reply_tones, profile.portrait_choices)
         self.setWindowTitle(profile.display_name)
         self.name_label.setText(profile.display_name)
-        self.input_edit.setPlaceholderText(f"和{profile.display_name}说点什么...")
         if self._should_use_live2d(profile) != self._using_live2d:
             self._replace_portrait_controller(profile)
             portrait_pixmap = self.portrait_controller.pixmap
         else:
             portrait_pixmap = self.portrait_controller.set_profile(profile)
         if hasattr(self, "tray_icon"):
-            self.tray_icon.setToolTip(profile.display_name)
             self._apply_tray_icon()
 
         self.history_store = self._create_history_store(profile)
@@ -3485,6 +4199,7 @@ class PetWindow(QWidget):
         if profile.id != previous_character_id:
             self.messages = []
             self.subtitle_controller.cancel_reply_flow(profile.initial_message)
+        self._update_proactive_care_hint()
 
     def _create_history_store(self, profile: CharacterProfile) -> ChatHistoryStore:
         history_path = self.base_dir / "data" / "chat_history" / f"{profile.id}.jsonl"
@@ -3700,6 +4415,16 @@ def _last_user_message_index(messages: list[dict[str, Any]]) -> int | None:
     return None
 
 
+def _history_entry_tts_text(entry: ChatHistoryEntry) -> str:
+    text = entry.content.strip()
+    if not text:
+        return ""
+    recovered = parse_chat_reply_result(text)
+    if not recovered.needs_retry and recovered.reply.text.strip():
+        return recovered.reply.text.strip()
+    return text
+
+
 def _reply_history_segments_from_entries(entries: list[ChatHistoryEntry]) -> list[ChatSegment]:
     segments: list[ChatSegment] = []
     for entry in entries:
@@ -3747,12 +4472,27 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def _stage_size_for_portrait_scale_percent(portrait_scale_percent: int) -> tuple[int, int]:
-    scale = normalize_portrait_scale_percent(portrait_scale_percent) / 100
+def _panel_width_scale(panel_width_percent: int) -> float:
+    return normalize_panel_width_percent(panel_width_percent) / 100
+
+
+def _stage_size_for_layout(
+    portrait_scale_percent: int,
+    panel_width_percent: int,
+) -> tuple[int, int]:
+    portrait_scale = normalize_portrait_scale_percent(portrait_scale_percent) / 100
+    panel_scale = _panel_width_scale(panel_width_percent)
     return (
-        max(520, round(DEFAULT_STAGE_WIDTH * scale)),
-        max(380, round(DEFAULT_STAGE_HEIGHT * scale)),
+        max(460, round(DEFAULT_STAGE_WIDTH * portrait_scale * panel_scale)),
+        max(380, round(DEFAULT_STAGE_HEIGHT * portrait_scale)),
     )
+
+
+def _bubble_layout_width(stage_width: int, panel_width_percent: int) -> int:
+    panel_scale = _panel_width_scale(panel_width_percent)
+    bubble_max = max(240, round(BUBBLE_MAX_WIDTH * panel_scale))
+    side_margin = max(40, round(BUBBLE_SIDE_MARGIN * panel_scale))
+    return min(bubble_max, stage_width - side_margin)
 
 
 def _configure_reply_history_panel(panel: QFrame) -> None:

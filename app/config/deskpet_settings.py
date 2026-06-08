@@ -2,12 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.ui.themes import DEFAULT_UI_THEME, normalize_ui_theme
+
 SUBTITLE_LANGUAGE_ZH = "zh"
 SUBTITLE_LANGUAGE_JA = "ja"
 
 REMINDER_CHECK_INTERVAL_MIN_SECONDS = 3
 REMINDER_CHECK_INTERVAL_MAX_SECONDS = 120
 REMINDER_CHECK_INTERVAL_DEFAULT_SECONDS = 5
+
+PANEL_WIDTH_PERCENT_MIN = 20
+PANEL_WIDTH_PERCENT_MAX = 500
+PANEL_WIDTH_PERCENT_DEFAULT = 100
+
+def normalize_panel_width_percent(value: object) -> int:
+    try:
+        percent = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        percent = PANEL_WIDTH_PERCENT_DEFAULT
+    return max(PANEL_WIDTH_PERCENT_MIN, min(PANEL_WIDTH_PERCENT_MAX, percent))
 
 
 @dataclass(frozen=True)
@@ -19,8 +32,11 @@ class PetUISettings:
     free_access_enabled: bool = False
     music_plugin_enabled: bool = True
     music_default_source: str = "netease"
-    lyric_sync_offset_seconds: float = 1.2
-    music_sing_along_enabled: bool = True
+    lyric_sync_offset_seconds: float = 0.6
+    ui_theme: str = DEFAULT_UI_THEME
+    desktop_pet_rules_enabled: bool = False
+    strict_ja_zh_correspondence_enabled: bool = False
+    panel_width_percent: int = PANEL_WIDTH_PERCENT_DEFAULT
 
     def normalized(self) -> "PetUISettings":
         language = str(self.subtitle_language).strip().lower()
@@ -32,7 +48,7 @@ class PetUISettings:
         try:
             lyric_offset = float(self.lyric_sync_offset_seconds)
         except (TypeError, ValueError):
-            lyric_offset = 1.2
+            lyric_offset = 0.6
         lyric_offset = max(-5.0, min(5.0, lyric_offset))
         return PetUISettings(
             hover_only_ui=bool(self.hover_only_ui),
@@ -41,7 +57,10 @@ class PetUISettings:
             music_plugin_enabled=bool(self.music_plugin_enabled),
             music_default_source=source,
             lyric_sync_offset_seconds=lyric_offset,
-            music_sing_along_enabled=bool(self.music_sing_along_enabled),
+            ui_theme=normalize_ui_theme(self.ui_theme),
+            desktop_pet_rules_enabled=bool(self.desktop_pet_rules_enabled),
+            strict_ja_zh_correspondence_enabled=bool(self.strict_ja_zh_correspondence_enabled),
+            panel_width_percent=normalize_panel_width_percent(self.panel_width_percent),
         )
 
 

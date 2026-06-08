@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import os
 import webbrowser
 from pathlib import Path
+
+from app.platform.open_folder import open_folder_in_file_manager
 from typing import Any
 from urllib.parse import urlparse
 
@@ -63,18 +64,12 @@ def open_url(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def open_local_folder(arguments: dict[str, Any]) -> dict[str, Any]:
     path_text = _required_text(arguments, "path")
-    path = Path(path_text).expanduser().resolve()
-    if not path.exists():
-        raise ValueError(f"文件夹不存在：{path}")
-    if not path.is_dir():
-        raise ValueError(f"不是文件夹：{path}")
-
-    if os.name == "nt":
-        os.startfile(path)  # type: ignore[attr-defined]
-    else:
-        webbrowser.open(path.as_uri())
+    try:
+        opened_path = open_folder_in_file_manager(Path(path_text), create=False)
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        raise ValueError(str(exc)) from exc
     return {
-        "path": str(path),
+        "path": opened_path,
         "opened": True,
     }
 

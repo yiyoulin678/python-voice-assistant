@@ -19,18 +19,38 @@ class CharacterConfigError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class CharacterExpressionPreset:
+    """Live2D 手动选表情菜单项：基础表情 + 可选叠加层。"""
+
+    label: str
+    expression: str
+    overlays: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CharacterLive2D:
     model_json_path: Path
     idle_motion_file: str | None = None
     default_expression: str | None = None
     tone_expressions: dict[str, str] = field(default_factory=dict)
+    expression_presets: tuple[CharacterExpressionPreset, ...] = ()
     speaking_expression: str | None = None
     speaking_overlay_expressions: tuple[str, ...] = ()
     tap_expressions: tuple[str, ...] = ()
+    tap_motions: tuple[str, ...] = ()
+    tap_motion_group: str = "TapBody"
+    tone_motions: dict[str, str] = field(default_factory=dict)
     idle_variation_expressions: tuple[str, ...] = ()
+    idle_variation_motions: tuple[str, ...] = ()
     idle_variation_min_seconds: float = 12.0
     idle_variation_max_seconds: float = 22.0
     blink_enabled: bool = True
+    physics_enabled: bool = True
+    mouse_tracking_enabled: bool = True
+    mouse_tracking_max_angle: float = 30.0
+    mouse_tracking_max_eye_offset: float = 0.85
+    mouse_tracking_body_factor: float = 0.35
+    mouse_tracking_smoothing: float = 0.18
 
 
 @dataclass(frozen=True)
@@ -105,23 +125,71 @@ class CharacterRegistry:
         return profiles
 
 
-def load_system_prompt(path: Path) -> str:
+def finalize_character_prompt(content: str, *, append_desktop_pet_rules: bool) -> str:
+    """按设置决定是否把通用桌宠规则拼到 card 人设后。"""
+    stripped = content.strip()
+    if not stripped:
+        stripped = FALLBACK_SYSTEM_PROMPT.strip()
+    if append_desktop_pet_rules:
+        return with_desktop_pet_context(stripped)
+    return stripped
+
+
+def load_system_prompt(path: Path, *, append_desktop_pet_rules: bool = False) -> str:
     if not path.exists():
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+        return finalize_character_prompt(
+            FALLBACK_SYSTEM_PROMPT,
+            append_desktop_pet_rules=append_desktop_pet_rules,
+        )
 
     try:
-        content = path.read_text(encoding="utf-8").strip()
+        content = path.read_text(encoding="utf-8")
     except OSError:
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+        return finalize_character_prompt(
+            FALLBACK_SYSTEM_PROMPT,
+            append_desktop_pet_rules=append_desktop_pet_rules,
+        )
 
-    if not content:
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+    if not content.strip():
+        return finalize_character_prompt(
+            FALLBACK_SYSTEM_PROMPT,
+            append_desktop_pet_rules=append_desktop_pet_rules,
+        )
 
-    return _append_desktop_context(content)
+    return finalize_character_prompt(
+        content,
+        append_desktop_pet_rules=append_desktop_pet_rules,
+    )
 
 
-def load_character_system_prompt(profile: CharacterProfile) -> str:
-    return load_system_prompt(profile.card_path)
+def load_character_system_prompt(
+    profile: CharacterProfile,
+    *,
+    append_desktop_pet_rules: bool = False,
+) -> str:
+    return load_system_prompt(
+        profile.card_path,
+        append_desktop_pet_rules=append_desktop_pet_rules,
+    )
+
+
+def read_character_card(profile: CharacterProfile) -> str:
+    """读取角色包内的人设文件原文。"""
+    try:
+        return profile.card_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CharacterConfigError(f"无法读取人设文件：{profile.card_path}") from exc
+
+
+def write_character_card(profile: CharacterProfile, content: str) -> None:
+    """将人设写回角色包内的 card 文件。"""
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.strip():
+        raise CharacterConfigError("人设内容不能为空。")
+    try:
+        profile.card_path.write_text(normalized, encoding="utf-8")
+    except OSError as exc:
+        raise CharacterConfigError(f"无法保存人设文件：{profile.card_path}") from exc
 
 
 def _load_profile(manifest_path: Path) -> CharacterProfile:
@@ -196,6 +264,10 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
     idle_motion = _optional_text(live2d_data, "idle_motion", "")
     default_expression = _optional_text(live2d_data, "default_expression", "")
     tone_expressions = _load_live2d_tone_map(live2d_data.get("tone_expressions"), manifest_path)
+    expression_presets = _load_live2d_expression_presets(
+        live2d_data.get("expression_presets"),
+        manifest_path,
+    )
     speaking_expression = _optional_text(live2d_data, "speaking_expression", "")
     speaking_overlay = _load_live2d_overlay_expressions(
         live2d_data.get("speaking_overlay_expressions"),
@@ -206,10 +278,22 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
         manifest_path,
         "tap_expressions",
     )
+    tap_motions = _load_live2d_expression_list(
+        live2d_data.get("tap_motions"),
+        manifest_path,
+        "tap_motions",
+    )
+    tap_motion_group = _optional_text(live2d_data, "tap_motion_group", "TapBody") or "TapBody"
+    tone_motions = _load_live2d_tone_map(live2d_data.get("tone_motions"), manifest_path)
     idle_variations = _load_live2d_expression_list(
         live2d_data.get("idle_variation_expressions"),
         manifest_path,
         "idle_variation_expressions",
+    )
+    idle_variation_motions = _load_live2d_expression_list(
+        live2d_data.get("idle_variation_motions"),
+        manifest_path,
+        "idle_variation_motions",
     )
     idle_min = _optional_positive_float(
         live2d_data.get("idle_variation_min_seconds"),
@@ -224,18 +308,60 @@ def _load_live2d(package_dir: Path, live2d_data: Any, manifest_path: Path) -> Ch
     if idle_max < idle_min:
         idle_max = idle_min
     blink_enabled = _optional_bool(live2d_data.get("blink_enabled"), default=True)
+    physics_enabled = _optional_bool(live2d_data.get("physics_enabled"), default=True)
+    mouse_tracking_enabled = _optional_bool(
+        live2d_data.get("mouse_tracking_enabled"),
+        default=True,
+    )
+    mouse_tracking_max_angle = _optional_positive_float(
+        live2d_data.get("mouse_tracking_max_angle"),
+        30.0,
+        "mouse_tracking_max_angle",
+    )
+    mouse_tracking_max_eye_offset = _optional_positive_float(
+        live2d_data.get("mouse_tracking_max_eye_offset"),
+        0.85,
+        "mouse_tracking_max_eye_offset",
+    )
+    mouse_tracking_body_factor = _optional_positive_float(
+        live2d_data.get("mouse_tracking_body_factor"),
+        0.35,
+        "mouse_tracking_body_factor",
+    )
+    mouse_tracking_smoothing = _optional_positive_float(
+        live2d_data.get("mouse_tracking_smoothing"),
+        0.18,
+        "mouse_tracking_smoothing",
+    )
+    if mouse_tracking_max_eye_offset > 1.0:
+        mouse_tracking_max_eye_offset = 1.0
+    if mouse_tracking_body_factor > 1.0:
+        mouse_tracking_body_factor = 1.0
+    if mouse_tracking_smoothing > 1.0:
+        mouse_tracking_smoothing = 1.0
     return CharacterLive2D(
         model_json_path=model_json,
         idle_motion_file=idle_motion or None,
         default_expression=default_expression or None,
         tone_expressions=tone_expressions,
+        expression_presets=expression_presets,
         speaking_expression=speaking_expression or None,
         speaking_overlay_expressions=speaking_overlay,
         tap_expressions=tap_expressions,
+        tap_motions=tap_motions,
+        tap_motion_group=tap_motion_group,
+        tone_motions=tone_motions,
         idle_variation_expressions=idle_variations,
+        idle_variation_motions=idle_variation_motions,
         idle_variation_min_seconds=idle_min,
         idle_variation_max_seconds=idle_max,
         blink_enabled=blink_enabled,
+        physics_enabled=physics_enabled,
+        mouse_tracking_enabled=mouse_tracking_enabled,
+        mouse_tracking_max_angle=mouse_tracking_max_angle,
+        mouse_tracking_max_eye_offset=mouse_tracking_max_eye_offset,
+        mouse_tracking_body_factor=mouse_tracking_body_factor,
+        mouse_tracking_smoothing=mouse_tracking_smoothing,
     )
 
 
@@ -289,6 +415,38 @@ def _optional_bool(value: Any, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _load_live2d_expression_presets(
+    raw_value: Any,
+    manifest_path: Path,
+) -> tuple[CharacterExpressionPreset, ...]:
+    if raw_value is None:
+        return ()
+    if not isinstance(raw_value, list):
+        raise CharacterConfigError(f"live2d.expression_presets 必须是数组：{manifest_path}")
+    presets: list[CharacterExpressionPreset] = []
+    for index, item in enumerate(raw_value):
+        if not isinstance(item, dict):
+            raise CharacterConfigError(
+                f"live2d.expression_presets[{index}] 必须是对象：{manifest_path}"
+            )
+        label = _required_text(item, "label", manifest_path).strip()
+        expression_id = _required_text(item, "expression", manifest_path).strip()
+        overlays = _load_live2d_expression_list(
+            item.get("overlays"),
+            manifest_path,
+            f"expression_presets[{index}].overlays",
+        )
+        if label and expression_id:
+            presets.append(
+                CharacterExpressionPreset(
+                    label=label,
+                    expression=expression_id,
+                    overlays=overlays,
+                )
+            )
+    return tuple(presets)
 
 
 def _load_live2d_tone_map(raw_map: Any, manifest_path: Path) -> dict[str, str]:
@@ -384,5 +542,3 @@ def _resolve_package_path(package_dir: Path, path_text: str) -> Path:
     return package_dir / path
 
 
-def _append_desktop_context(content: str) -> str:
-    return with_desktop_pet_context(content)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import time
 import types
 import urllib.error
 import uuid
@@ -71,14 +73,11 @@ if importlib.util.find_spec("PySide6") is None:
     sys.modules["PySide6.QtMultimedia"] = qtmultimedia_module
 
 from app.voice.tts import (
-    GenieTTSProvider,
     GPTSoVITSTTSProvider,
     GPTSoVITSTTSSettings,
     TTSPreparedAudio,
-    _build_genie_endpoint_url,
     _load_tone_references,
     _resolve_request_text_lang,
-    _write_genie_audio,
 )
 from app.voice import VoicePlaybackController
 from app.voice.text_language_guard import should_skip_tts_text
@@ -279,140 +278,6 @@ def test_tts_service_probe_reports_missing_local_runtime(monkeypatch) -> None:  
     assert not GPTSoVITSTTSProvider._ensure_service_available(provider, messages.append)
     assert "运行时不存在" in messages[0]
     assert "python.exe" in messages[0]
-
-
-def test_genie_service_probe_starts_local_server_when_port_is_down(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    work_dir = _runtime_root("genie_start") / "genie"
-    (work_dir / "runtime").mkdir(parents=True)
-    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
-    provider = types.SimpleNamespace()
-    provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9881/")
-    provider._service_checked = False
-    provider._server_process = None
-    messages: list[str] = []
-    connection_calls = 0
-    popen_calls: list[list[str]] = []
-
-    class FakeConnection:
-        def __enter__(self) -> "FakeConnection":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    class FakeProcess:
-        pid = 4321
-
-        def poll(self) -> None:
-            return None
-
-    def fake_create_connection(*_args: object, **_kwargs: object) -> FakeConnection:
-        nonlocal connection_calls
-        connection_calls += 1
-        if connection_calls == 1:
-            raise OSError("connection refused")
-        return FakeConnection()
-
-    def fake_popen(args, **_kwargs):  # type: ignore[no-untyped-def]
-        popen_calls.append(list(args))
-        return FakeProcess()
-
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("app.voice.tts.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(GenieTTSProvider, "_probe_genie_api", lambda *_args: True)
-
-    assert GenieTTSProvider._ensure_service_available(provider, messages.append)
-    assert messages == []
-    assert len(popen_calls) == 1
-    assert popen_calls[0][0] == str(work_dir / "runtime" / "python.exe")
-    assert popen_calls[0][1] == "-c"
-    assert "port=9881" in popen_calls[0][2]
-
-
-def test_genie_service_probe_moves_to_fallback_port_when_9880_is_gptsovits(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    work_dir = _runtime_root("genie_fallback_port") / "genie"
-    (work_dir / "runtime").mkdir(parents=True)
-    (work_dir / "runtime" / "python.exe").write_text("fake", encoding="utf-8")
-    provider = types.SimpleNamespace()
-    provider.settings = _minimal_tts_settings(provider="genie-tts", work_dir=work_dir, api_url="http://127.0.0.1:9880/")
-    provider._service_checked = False
-    provider._server_process = None
-    messages: list[str] = []
-    service_started = False
-    popen_calls: list[list[str]] = []
-
-    class FakeConnection:
-        def __enter__(self) -> "FakeConnection":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    class FakeProcess:
-        pid = 4322
-
-        def poll(self) -> None:
-            return None
-
-    def fake_create_connection(address, **_kwargs):  # type: ignore[no-untyped-def]
-        _host, port = address
-        if port == 9880:
-            return FakeConnection()
-        if port == 9881 and service_started:
-            return FakeConnection()
-        raise OSError("connection refused")
-
-    def fake_popen(args, **_kwargs):  # type: ignore[no-untyped-def]
-        nonlocal service_started
-        popen_calls.append(list(args))
-        service_started = True
-        return FakeProcess()
-
-    def fake_probe_genie_api(self, _timeout):  # type: ignore[no-untyped-def]
-        return str(self.settings.api_url).endswith(":9881/")
-
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("app.voice.tts.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("app.voice.tts._can_bind_local_port", lambda *_args: True)
-    monkeypatch.setattr(GenieTTSProvider, "_probe_genie_api", fake_probe_genie_api)
-
-    assert GenieTTSProvider._ensure_service_available(provider, messages.append)
-    assert messages == []
-    assert provider.settings.api_url == "http://127.0.0.1:9881/"
-    assert "port=9881" in popen_calls[0][2]
-
-
-def test_genie_service_probe_rejects_non_genie_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    provider = types.SimpleNamespace()
-    provider.settings = _minimal_tts_settings(provider="genie-tts", api_url="http://127.0.0.1:9880/")
-    provider._service_checked = False
-    provider._server_process = None
-    messages: list[str] = []
-
-    class FakeConnection:
-        def __enter__(self) -> "FakeConnection":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    monkeypatch.setattr("app.voice.tts.socket.create_connection", lambda *_args, **_kwargs: FakeConnection())
-    monkeypatch.setattr(GenieTTSProvider, "_probe_genie_api", lambda *_args: False)
-
-    assert not GenieTTSProvider._ensure_service_available(provider, messages.append)
-    assert "不是 Genie TTS" in messages[0]
-
-
-def test_genie_endpoint_replaces_tts_path() -> None:
-    assert _build_genie_endpoint_url("http://127.0.0.1:9880/", "load_character") == "http://127.0.0.1:9880/load_character"
-    assert _build_genie_endpoint_url("http://127.0.0.1:9880/tts", "set_reference_audio") == "http://127.0.0.1:9880/set_reference_audio"
-
-
-def test_genie_audio_writer_accepts_raw_pcm() -> None:
-    output = _runtime_root("genie_audio") / "out.wav"
-
-    assert _write_genie_audio(b"\x00\x00\x10\x00\x00\x00", output)
-    assert output.is_file()
 
 
 def test_tts_provider_stop_local_service_terminates_owned_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -697,6 +562,49 @@ def test_voice_playback_controller_allows_japanese_speak_and_prepare() -> None:
     assert events == ["started", "finished"]
 
 
+def test_voice_playback_controller_uses_prepared_first_segment_audio() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    class RecordingTTS:
+        def __init__(self) -> None:
+            self.prepared = TTSPreparedAudio(text="最初の一段。")
+            self.speak_prepared_calls = 0
+
+        def prepare(self, *_args: object, **_kwargs: object) -> TTSPreparedAudio:
+            return self.prepared
+
+        def speak_prepared(
+            self,
+            _handle: TTSPreparedAudio,
+            on_started=None,  # type: ignore[no-untyped-def]
+            on_finished=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.speak_prepared_calls += 1
+            if on_started is not None:
+                on_started()
+            if on_finished is not None:
+                on_finished()
+
+        def discard_prepared(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    events: list[str] = []
+    segment = ChatSegment("最初の一段。", "中性")
+    tts = RecordingTTS()
+    controller = VoicePlaybackController(tts, lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
+
+    controller.prepare_first_segment(segment)
+    controller.speak_segment(
+        segment,
+        1,
+        on_started=lambda: events.append("started"),
+        on_finished=lambda: events.append("finished"),
+    )
+
+    assert tts.speak_prepared_calls == 1
+    assert events == ["started", "finished"]
+
+
 def test_voice_playback_controller_uses_prepared_japanese_audio() -> None:
     from app.llm.chat_reply import ChatSegment
 
@@ -740,7 +648,86 @@ def test_voice_playback_controller_uses_prepared_japanese_audio() -> None:
     assert events == ["started", "finished"]
 
 
+def test_voice_playback_controller_preserves_first_prepare_on_discard() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    class TrackingTTS:
+        def __init__(self) -> None:
+            self.prepared = TTSPreparedAudio(text="最初の一段。")
+            self.discard_calls = 0
+
+        def prepare(self, *_args: object, **_kwargs: object) -> TTSPreparedAudio:
+            return self.prepared
+
+        def discard_prepared(self, *_args: object, **_kwargs: object) -> None:
+            self.discard_calls += 1
+
+    segment = ChatSegment("最初の一段。", "中性")
+    tts = TrackingTTS()
+    controller = VoicePlaybackController(tts, lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
+
+    controller.prepare_first_segment(segment)
+    controller.discard_prepared(preserve_first_text="最初の一段。")
+
+    assert tts.discard_calls == 0
+    assert controller.has_active_first_prepare_for_text("最初の一段。")
+
+
+def test_voice_playback_controller_falls_back_when_prepared_failed() -> None:
+    from app.llm.chat_reply import ChatSegment
+
+    class FallbackTTS:
+        def __init__(self) -> None:
+            self.speak_calls = 0
+
+        def speak(
+            self,
+            _text: str,
+            _tone: str | None = None,
+            on_finished=None,  # type: ignore[no-untyped-def]
+            on_started=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            self.speak_calls += 1
+            if on_started is not None:
+                on_started()
+            if on_finished is not None:
+                on_finished()
+
+        def speak_prepared(
+            self,
+            _handle: TTSPreparedAudio,
+            on_started=None,  # type: ignore[no-untyped-def]
+            on_finished=None,  # type: ignore[no-untyped-def]
+        ) -> None:
+            if on_started is not None:
+                on_started()
+            if on_finished is not None:
+                on_finished()
+
+        def discard_prepared(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    segment = ChatSegment("失敗後の一段。", "中性")
+    tts = FallbackTTS()
+    controller = VoicePlaybackController(tts, lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
+    failed = TTSPreparedAudio(text=segment.text, failed=True)
+    controller._prepared_first_segment = segment
+    controller._prepared_first_tts = failed
+
+    events: list[str] = []
+    controller.speak_segment(
+        segment,
+        1,
+        on_started=lambda: events.append("started"),
+        on_finished=lambda: events.append("finished"),
+    )
+
+    assert tts.speak_calls == 1
+    assert events == ["started", "finished"]
+
+
 def test_voice_playback_controller_ignores_prepare_error() -> None:
+
     from app.llm.chat_reply import ChatSegment
 
     class FailingPrepareTTS:
@@ -760,6 +747,31 @@ def test_voice_playback_controller_ignores_prepare_error() -> None:
     controller.prepare_next(ChatSegment("次の一段", "中性"))
 
     assert errors == ["预生成失败，已继续字幕流程：prepare down"]
+
+
+def test_tts_warm_up_synthesis_runs_service_and_weight_warmup(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    provider = GPTSoVITSTTSProvider(_minimal_tts_settings())
+    calls: list[str] = []
+
+    def fake_ensure_service(_self: object, fail: object) -> bool:
+        calls.append("service")
+        return True
+
+    def fake_ensure_weights(_self: object, fail: object) -> bool:
+        calls.append("weights")
+        return True
+
+    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_service_available", fake_ensure_service)
+    monkeypatch.setattr(GPTSoVITSTTSProvider, "_ensure_character_weights", fake_ensure_weights)
+
+    provider.warm_up_synthesis()
+    provider.warm_up_synthesis()
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not calls:
+        time.sleep(0.05)
+
+    assert calls == ["service", "weights"]
 
 
 def _minimal_tts_settings(
@@ -786,7 +798,6 @@ def _minimal_tts_settings(
         ref_text="テスト",
         work_dir=work_dir,
         character_name="夜乃桜",
-        onnx_model_dir=Path("data/tts_bundles/onnx/sakura") if provider == "genie-tts" else None,
         ref_lang="ja",
         text_lang="ja",
         timeout_seconds=1,

@@ -169,7 +169,7 @@ def test_tts_bundle_cleans_legacy_archive_when_bundle_is_installed() -> None:
 
 def test_tts_bundle_legacy_cleanup_preserves_uninstalled_and_unknown_archives() -> None:
     root = _runtime_root("cleanup_preserve_archives")
-    entry = tts_bundle.GENIE_TTS
+    entry = tts_bundle.GPT_SOVITS_STANDARD
     archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
     unknown_archive = archive.parent / "unknown.7z"
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -184,9 +184,9 @@ def test_tts_bundle_legacy_cleanup_preserves_uninstalled_and_unknown_archives() 
     assert unknown_archive.exists()
 
 
-def test_tts_bundle_recommends_genie_for_cpu_or_small_gpu() -> None:
-    assert tts_bundle.recommend_tts_bundle([]).key == "genie_tts_server"
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1050 Ti", 4.0)]).key == "genie_tts_server"
+def test_tts_bundle_recommends_gptsovits_for_cpu_or_small_gpu() -> None:
+    assert tts_bundle.recommend_tts_bundle([]).key == "gpt_sovits_v2pro"
+    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1050 Ti", 4.0)]).key == "gpt_sovits_v2pro"
 
 
 def test_tts_bundle_recommends_gptsovits_for_capable_nvidia() -> None:

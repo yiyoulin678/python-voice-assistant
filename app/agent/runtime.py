@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Any, Callable
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.ai.metrics import AiMetricsRecorder
 from app.agent.memory import MemoryStore
+from app.rag.knowledge_base import KnowledgeBase
 from app.agent.screen_tools import (
     OBSERVE_SCREEN_TOOL_NAME,
     SCREEN_OBSERVATION_CAPABILITY,
@@ -72,6 +74,9 @@ class AgentRuntime:
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
         self.memory = memory or MemoryStore()
+        self.knowledge_base = knowledge_base
+        self.metrics = metrics
+        self._turn_messages: list[ChatMessage] = []
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
         self.task_db = task_db
@@ -100,6 +105,10 @@ class AgentRuntime:
         """允许模型在对话或主动事件中自主决定是否观察屏幕。"""
         self.autonomous_screen_observation_enabled = enabled
 
+    def set_strict_ja_zh_correspondence_enabled(self, enabled: bool) -> None:
+        """启用后要求 ja/zh 逐语气完全对应，并触发修复重试。"""
+        self.strict_ja_zh_correspondence_enabled = bool(enabled)
+
     def _parse_final_reply_with_retry(
         self,
         system_prompt: str,
@@ -107,7 +116,10 @@ class AgentRuntime:
         raw_content: str,
     ) -> ChatReply:
         """最终回复结构不合格时，只重试一次格式修复，避免坏 JSON 进入 UI。"""
-        parsed = parse_chat_reply_result(raw_content)
+        parsed = parse_chat_reply_result(
+            raw_content,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
+        )
         if not parsed.needs_retry:
             return parsed.reply
 
@@ -121,12 +133,9 @@ class AgentRuntime:
             {"role": "assistant", "content": raw_content},
             {
                 "role": "user",
-                "content": (
-                    "上一条 assistant 输出不是合格的 Mutsuki 回复 JSON。"
-                    "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
-                    "格式必须是 {\"segments\":[{\"ja\":\"自然日语\",\"zh\":\"中文译文\","
-                    "\"tone\":\"中性\",\"portrait\":\"站立待机\"}]}。"
-                    "ja 字段只能写自然日语，不能包含中文。"
+                "content": _build_agent_reply_repair_message(
+                    parsed.reason,
+                    self.strict_ja_zh_correspondence_enabled,
                 ),
             },
         ]
@@ -143,7 +152,10 @@ class AgentRuntime:
             debug_log("AgentRuntime", "最终回复修复请求失败，使用安全兜底", {"error": str(exc)})
             return parsed.reply
 
-        repaired = parse_chat_reply_result(repaired_turn.content)
+        repaired = parse_chat_reply_result(
+            repaired_turn.content,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
+        )
         if repaired.needs_retry:
             debug_log(
                 "AgentRuntime",
@@ -177,13 +189,15 @@ class AgentRuntime:
                 "messages": summarize_messages(messages),
             },
         )
-        return self._run_tool_loop(
+        result = self._run_tool_loop(
             messages,
             allow_screen_observation=allow_screen_observation,
             turn_started_at=turn_started_at,
             vision_unsupported_reply=_build_vision_unsupported_reply(),
             progress_callback=progress_callback,
         )
+        self._record_chat_metrics(messages, result, turn_started_at)
+        return result
 
     def _run_tool_loop(
         self,
@@ -198,11 +212,12 @@ class AgentRuntime:
         progress_callback: ProgressCallback | None = None,
     ) -> AgentResult:
         """执行 OpenAI 原生 tools/tool_calls 循环。"""
+        self._turn_messages = [*messages]
         working_messages: list[ChatMessage] = [*messages]
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
-        active_groups: set[str] = {"default", "mcp", "memory"}
+        active_groups: set[str] = {"default", "mcp", "memory", "knowledge"}
         for step_index in range(MAX_AGENT_STEPS_PER_TURN):
             browser_page_mode = _should_prefer_browser_page_tools(working_messages)
             browser_page_guard_active = (
@@ -568,6 +583,7 @@ class AgentRuntime:
                 working_messages,
                 self.reply_tones,
                 self.reply_portraits,
+                strict_correspondence=self.strict_ja_zh_correspondence_enabled,
             )
         except Exception as exc:
             print(f"[AgentRuntime] 工具结果总结失败，使用本地兜底回复：{exc}")
@@ -663,6 +679,7 @@ class AgentRuntime:
                 ],
                 self.reply_tones,
                 self.reply_portraits,
+                strict_correspondence=self.strict_ja_zh_correspondence_enabled,
             )
         except Exception as exc:
             print(f"[AgentRuntime] 确认动作总结失败，使用本地兜底回复：{exc}")
@@ -746,6 +763,7 @@ class AgentRuntime:
                 event_messages,
                 self.reply_tones,
                 self.reply_portraits,
+                strict_correspondence=self.strict_ja_zh_correspondence_enabled,
             )
         except ApiRequestError as exc:
             if messages_contain_image(event_messages) and is_vision_unsupported_error(exc):
@@ -767,8 +785,13 @@ class AgentRuntime:
         visible_browser_mode: bool = False,
     ) -> str:
         memory_summary = self._memory_summary()
+        knowledge_context = self._knowledge_context()
         current_time = datetime.now().astimezone().isoformat(timespec="seconds")
-        reply_protocol = build_agent_reply_protocol(self.reply_tones, self.reply_portraits)
+        reply_protocol = build_agent_reply_protocol(
+            self.reply_tones,
+            self.reply_portraits,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
+        )
         context_strategy = build_context_acquisition_strategy(
             allow_screen_observation=allow_screen_observation
         )
@@ -784,6 +807,8 @@ class AgentRuntime:
 
 长期记忆摘要：
 {memory_summary}
+
+{knowledge_context}
 
 当前本地时间：
 {current_time}
@@ -802,6 +827,8 @@ class AgentRuntime:
 - 屏幕：理解当前画面用 observe_screen（仅启用时可用）。
 - 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。
 - 提醒与记忆：add_reminder、memory_search、memory_remember、memory_forget
+- 公开网页：web_search、fetch_url（轻量搜索/读页，无需浏览器）
+- 文档知识库：knowledge_search（检索 data/knowledge/ 下的说明文档）
 
 工具要求：
 - 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。
@@ -819,6 +846,8 @@ class AgentRuntime:
 - 用户说“几分钟后/几秒后/一会儿后”等相对提醒时，add_reminder 必须使用 delay_minutes 或 delay_seconds，不要自己换算 trigger_at。
 - 只有用户给出明确日期或钟点时，add_reminder 才使用 trigger_at。
 - 需要跨会话信息、用户偏好或项目状态时，优先使用 memory_search。
+- 需要最新公开信息、新闻、百科或网页资料时，优先使用 web_search；摘要不够时再 fetch_url。
+- 需要课设要求、项目说明等已入库文档时，优先使用 knowledge_search。
 - 只有用户明确要求记住，或信息明显长期有用且不包含敏感凭据时，才使用 memory_remember。
 - 只有用户明确要求忘掉信息时，才使用 memory_forget。
 """.strip()
@@ -858,6 +887,7 @@ class AgentRuntime:
             self.reply_tones,
             self.reply_portraits,
             event_type=event_type,
+            strict_correspondence=self.strict_ja_zh_correspondence_enabled,
         )
 
     def _memory_summary(self) -> str:
@@ -865,6 +895,49 @@ class AgentRuntime:
             return self.memory.summary()
         except Exception as exc:
             return f"长期记忆读取失败：{exc}"
+
+    def _knowledge_context(self) -> str:
+        if self.knowledge_base is None:
+            return ""
+        query = _latest_user_text(self._turn_messages)
+        if not query:
+            return ""
+        try:
+            self.knowledge_base.reload()
+            context = self.knowledge_base.format_context(query)
+        except Exception as exc:  # noqa: BLE001
+            return f"知识库检索失败：{exc}"
+        return context
+
+    def _record_chat_metrics(
+        self,
+        messages: list[ChatMessage],
+        result: AgentResult,
+        started_at: float,
+    ) -> None:
+        if self.metrics is None:
+            return
+        user_text = _latest_user_text(messages)
+        tools_used = _extract_tool_names(result.actions)
+        tones = [segment.tone for segment in result.reply.segments if segment.tone.strip()]
+        rag_sources: list[str] = []
+        if self.knowledge_base is not None and user_text:
+            try:
+                rag_sources = [hit.source for hit in self.knowledge_base.search(user_text, limit=3)]
+            except Exception:  # noqa: BLE001
+                rag_sources = []
+        self.metrics.record(
+            "chat_completed",
+            {
+                "input_preview": user_text[:240],
+                "reply_preview": result.reply.text[:240],
+                "segment_count": len(result.reply.segments),
+                "tones": tones,
+                "tools": tools_used,
+                "rag_sources": rag_sources,
+                "latency_ms": int((time.perf_counter() - started_at) * 1000),
+            },
+        )
 
 
 def _emit_progress_from_content(
@@ -1508,7 +1581,7 @@ def _build_web_tool_capability_rule(visible_browser_mode: bool) -> str:
             "- 网页：本轮是显式可见浏览器任务，使用 playwright_*；"
             "后台 web__ 搜索/抓取只用于非可见浏览器的轻量公开资料。"
         )
-    return "- 网页：轻量公开资料用 web__web_search / web__fetch_url；可见浏览器操作用 playwright_*。"
+    return "- 网页：轻量公开资料用 web_search / fetch_url；可见浏览器操作用 playwright_*。"
 
 
 def _build_screen_and_desktop_routing_rule(allow_screen_observation: bool) -> str:
@@ -2164,6 +2237,24 @@ def _build_proactive_vision_unsupported_reply() -> ChatReply:
 
 
 
+def _build_agent_reply_repair_message(reason: str, strict_correspondence: bool) -> str:
+    base = (
+        "上一条 assistant 输出不是合格的 Mutsuki 回复 JSON。"
+        "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
+        '格式必须是 {"segments":[{"ja":"自然日语","zh":"中文译文","tone":"中性","portrait":"站立待机"}]}。'
+        "ja 字段只能写自然日语，不能包含中文。"
+    )
+    if reason == "correspondence_issue" or strict_correspondence:
+        return (
+            f"{base}"
+            "当前启用了完全对应模式：ja 与 zh 必须语气、句意完全对应，"
+            "禁止概括缩写或只写主干；语气词、因果转折和补充说明都不能只在一边出现。"
+        )
+    if reason == "language_issue":
+        return f"{base}请确保 ja 字段只写自然日语。"
+    return base
+
+
 def _build_debug_meta(
     api_client: Any,
     execution_results: list,
@@ -2184,3 +2275,34 @@ def _build_debug_meta(
             for result in execution_results
         ],
     }
+
+
+def _latest_user_text(messages: list[ChatMessage]) -> str:
+    for message in reversed(messages):
+        if str(message.get("role", "")).strip() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    parts.append(item["text"].strip())
+            joined = "\n".join(part for part in parts if part)
+            if joined.strip():
+                return joined.strip()
+    return ""
+
+
+def _extract_tool_names(actions: list[AgentAction]) -> list[str]:
+    names: list[str] = []
+    for action in actions:
+        if action.type != "tool_call":
+            continue
+        tool_name = action.payload.get("tool_name") or action.payload.get("name")
+        if isinstance(tool_name, str) and tool_name.strip():
+            names.append(tool_name.strip())
+    return names

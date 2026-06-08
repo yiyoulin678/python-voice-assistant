@@ -7,11 +7,16 @@ from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QLabel, QMessageBox, QWidget
 
-from app.config.character_loader import CharacterLive2D, CharacterProfile
+from app.config.character_loader import (
+    CharacterExpressionPreset,
+    CharacterLive2D,
+    CharacterProfile,
+)
 from app.llm.chat_reply import ChatSegment
 from app.ui.live2d_interaction import Live2DInteractionController
 from app.ui.live2d_lipsync import Live2DLipSyncController
 from app.ui.live2d_input_overlay import Live2DInputOverlay
+from app.ui.live2d_mouse_tracker import Live2DMouseTracker
 from app.ui.live2d_widget import Live2DWidget
 from app.ui.portrait_controller import (
     PORTRAIT_BASE_MAX_HEIGHT,
@@ -46,6 +51,7 @@ class Live2DPortraitController(QObject):
         self._relayout = relayout
         self._on_portrait_changed = on_portrait_changed
         self._current_expression: str | None = live2d_config.default_expression
+        self._persistent_expression_applied = False
         self._is_speaking = False
 
         self._stage_width, self._stage_height = self._scaled_stage_dimensions()
@@ -78,6 +84,13 @@ class Live2DPortraitController(QObject):
             self.live2d_widget,
             live2d_config,
             restore_expression=self._restore_base_expression,
+            on_tap_expression=self._apply_persistent_expression,
+            parent=self,
+        )
+        self._mouse_tracker = Live2DMouseTracker(
+            self.live2d_widget,
+            self.parent_widget,
+            live2d_config,
             parent=self,
         )
 
@@ -110,38 +123,75 @@ class Live2DPortraitController(QObject):
         self.profile = profile
         self._tray_pixmap = self._load_tray_pixmap(profile.default_portrait_path)
         self.pixmap = self._tray_pixmap
-        if profile.live2d is not None and profile.live2d.model_json_path != self.live2d_config.model_json_path:
+        if profile.live2d is not None:
+            previous_model = self.live2d_config.model_json_path
             self.live2d_config = profile.live2d
-            self.live2d_widget.reload_config(profile.live2d)
+            self._mouse_tracker.refresh_config(profile.live2d)
+            if profile.live2d.model_json_path != previous_model:
+                self.live2d_widget.reload_config(profile.live2d)
         self._current_expression = profile.live2d.default_expression if profile.live2d else None
         self.apply_current()
         self._on_portrait_changed(self.pixmap)
         return self.pixmap
 
+    @property
+    def has_speaking_board(self) -> bool:
+        return bool(
+            self.live2d_config.speaking_expression
+            or self.live2d_config.speaking_overlay_expressions
+        )
+
     def preload_for_segment(self, segment: ChatSegment) -> None:
-        return
+        if self.has_speaking_board:
+            self.begin_speech_segment()
 
     def apply_for_segment(self, segment: ChatSegment) -> None:
+        motion_name = self._motion_for_segment(segment)
+        if motion_name:
+            self.live2d_widget.play_motion_by_name(motion_name, force=True)
         expression_id = self._expression_for_segment(segment)
         if expression_id == self._current_expression and self.live2d_widget.is_ready():
             if self._is_speaking:
                 self._apply_speaking_expressions()
             return
         self._current_expression = expression_id
-        self.live2d_widget.set_expression(expression_id, hold_motion=False)
+        self._persistent_expression_applied = True
+        self.live2d_widget.set_persistent_expression(expression_id)
         if self._is_speaking:
             self._apply_speaking_expressions()
 
-    def begin_speech(self, audio_path: Path | str | None) -> None:
+    def begin_speech_segment(self) -> None:
+        """段落开始或等待 TTS 时举起画板。"""
+        if not self.has_speaking_board:
+            return
         self._is_speaking = True
+        self._apply_speaking_expressions()
+
+    def attach_speech_audio(self, audio_path: Path | str | None) -> None:
+        """有音频时驱动口型；无配置画板时仍可作为说话入口。"""
+        if not self._is_speaking and self.has_speaking_board:
+            self.begin_speech_segment()
+        elif not self._is_speaking:
+            self._is_speaking = True
         path = Path(audio_path) if audio_path else None
         self._lip_sync.start(path)
-        self._apply_speaking_expressions()
+
+    def detach_speech_audio(self) -> None:
+        """本段音频结束，仅停口型，画板保持到整轮回复结束。"""
+        self._lip_sync.stop()
+
+    def begin_speech(self, audio_path: Path | str | None) -> None:
+        self.begin_speech_segment()
+        self.attach_speech_audio(audio_path)
 
     def end_speech(self) -> None:
         self._is_speaking = False
         self._lip_sync.stop()
         self.live2d_widget.clear_expression_overlays()
+
+    def dispose(self) -> None:
+        self._mouse_tracker.stop()
+        self._interaction.stop()
 
     def _apply_speaking_expressions(self) -> None:
         speaking = self.live2d_config.speaking_expression
@@ -159,6 +209,15 @@ class Live2DPortraitController(QObject):
             return self.live2d_config.tone_expressions[tone_key]
         return self.live2d_config.default_expression
 
+    def _motion_for_segment(self, segment: ChatSegment) -> str | None:
+        portrait_key = (segment.portrait or "").strip()
+        if portrait_key and portrait_key in self.live2d_config.tone_motions:
+            return self.live2d_config.tone_motions[portrait_key]
+        tone_key = (segment.tone or "").strip()
+        if tone_key and tone_key in self.live2d_config.tone_motions:
+            return self.live2d_config.tone_motions[tone_key]
+        return None
+
     def _scaled_stage_dimensions(self) -> tuple[int, int]:
         scale = self.portrait_scale_percent / 100
         return (
@@ -168,8 +227,10 @@ class Live2DPortraitController(QObject):
 
     def _on_live2d_ready(self) -> None:
         self.apply_current()
-        self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
+        if self._is_speaking:
+            self._apply_speaking_expressions()
         self._interaction.start()
+        self._mouse_tracker.start()
 
     def trigger_tap(self, x: float, y: float) -> None:
         self._interaction.handle_tap(x, y)
@@ -178,27 +239,63 @@ class Live2DPortraitController(QObject):
     def current_expression(self) -> str | None:
         return self._current_expression
 
+    @property
+    def overlay_expressions(self) -> frozenset[str]:
+        return self.live2d_widget.overlay_expression_ids
+
+    def is_expression_preset_active(self, preset: CharacterExpressionPreset) -> bool:
+        if (self._current_expression or "").strip() != preset.expression:
+            return False
+        return self.overlay_expressions == frozenset(preset.overlays)
+
     def apply_expression(self, expression_id: str) -> bool:
-        """菜单手动切换表情；未就绪时会排队，模型加载后自动应用。"""
-        expression_id = expression_id.strip()
+        return self.apply_expression_preset(
+            CharacterExpressionPreset(label=expression_id, expression=expression_id)
+        )
+
+    def apply_expression_preset(self, preset: CharacterExpressionPreset) -> bool:
+        """菜单手动切换表情组合；未就绪时会排队，模型加载后自动应用。"""
+        expression_id = preset.expression.strip()
         if not expression_id:
             return False
-        if expression_id not in self.live2d_widget.list_expression_ids():
+        available_ids = set(self.live2d_widget.list_expression_ids())
+        if expression_id not in available_ids:
+            return False
+        overlays = tuple(
+            overlay.strip()
+            for overlay in preset.overlays
+            if overlay.strip() and overlay.strip() in available_ids
+        )
+        if len(overlays) != len(preset.overlays):
             return False
         self._interaction.cancel_scheduled_restore()
         self._interaction.cancel_idle_variation()
         self._current_expression = expression_id
-        self.live2d_widget.set_expression(expression_id, hold_motion=True)
+        self._persistent_expression_applied = True
+        self.live2d_widget.clear_expression_overlays()
+        self.live2d_widget.set_persistent_expression(expression_id)
+        for overlay_id in overlays:
+            self.live2d_widget.add_expression_overlay(overlay_id)
+        self._interaction.resume_idle_variation()
         if self._is_speaking and self.live2d_widget.is_ready():
             self._apply_speaking_expressions()
         return True
 
-    def _restore_base_expression(self) -> None:
-        if self._is_speaking:
-            self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
-            self._apply_speaking_expressions()
+    def _apply_persistent_expression(self, expression_id: str) -> None:
+        expression_id = expression_id.strip()
+        if not expression_id:
             return
-        self.live2d_widget.set_expression(self._current_expression, hold_motion=False)
+        self._current_expression = expression_id
+        self._persistent_expression_applied = True
+        self.live2d_widget.clear_fleeting_expressions(restart_motion=False)
+        self.live2d_widget.set_persistent_expression(expression_id)
+        if self._is_speaking:
+            self._apply_speaking_expressions()
+
+    def _restore_base_expression(self) -> None:
+        self.live2d_widget.clear_fleeting_expressions(restart_motion=not self._is_speaking)
+        if self._is_speaking:
+            self._apply_speaking_expressions()
 
     def _load_tray_pixmap(self, portrait_path: Path) -> QPixmap:
         pixmap = QPixmap(str(portrait_path))

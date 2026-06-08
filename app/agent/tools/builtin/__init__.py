@@ -1,4 +1,4 @@
-"""app/agent/tools/builtin/ — 内置工具 Provider。
+"""app/agent/tools/builtin/ — 内置工具扩展占位。
 
-将 builtin_tools.py 中的工具创建逻辑提取为 Provider 模式。
+实际内置工具注册见 app/agent/builtin_tools.py。
 """

@@ -31,8 +31,8 @@ def test_proactive_check_tool_prompt_contains_background_web_rules() -> None:
     prompt = _build_proactive_tool_prompt()
 
     assert "【主动感知后台 Web 搜索规则】" in prompt
-    assert "web__web_search" in prompt
-    assert "web__fetch_url" in prompt
+    assert "web_search" in prompt
+    assert "fetch_url" in prompt
     assert "不能把截图本身当作反向图片搜索能力" in prompt
     assert "不能编造具体身份" in prompt
     assert "不主动做人肉式识别" in prompt
@@ -127,6 +127,8 @@ def test_agent_tool_prompt_length_stays_compact() -> None:
     runtime.reply_tones = ["中性"]
     runtime.reply_portraits = ["站立待机"]
     runtime.memory = SimpleNamespace(summary=lambda: "无")
+    runtime.knowledge_base = None
+    runtime.strict_ja_zh_correspondence_enabled = False
 
     prompt = AgentRuntime._build_tool_system_prompt(
         runtime,
@@ -135,7 +137,7 @@ def test_agent_tool_prompt_length_stays_compact() -> None:
         remaining_steps=3,
     )
 
-    assert len(prompt) < 2800
+    assert len(prompt) < 3200
     assert prompt.count("主动感知核心规则") == 0
 
 
