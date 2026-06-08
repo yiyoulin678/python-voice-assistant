@@ -50,7 +50,7 @@ from app.llm.prompt_templates import (
     build_event_system_prompt,
     build_proactive_check_tool_system_prompt,
 )
-
+from app.task.task_db import TaskDB
 
 
 class AgentRuntime:
@@ -64,6 +64,7 @@ class AgentRuntime:
         reply_portraits: list[str] | None = None,
         tools: ToolRegistry | None = None,
         memory: MemoryStore | None = None,
+        task_db: TaskDB | None = None,
     ) -> None:
         self.api_client = api_client
         self.system_prompt = system_prompt
@@ -73,6 +74,12 @@ class AgentRuntime:
         self.memory = memory or MemoryStore()
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
+        self.task_db = task_db
+        #测试用打印函数
+        print(
+            "TASK DB =",
+            self.task_db
+        )
 
     def update_character(
         self,

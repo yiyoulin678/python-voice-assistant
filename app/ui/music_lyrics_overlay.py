@@ -109,7 +109,7 @@ class MusicLyricsOverlay(QWidget):
 
         self._track_timer.start()
         self._lyric_timer.start()
-        self._poll_track()
+        #self._poll_track()
 
     def set_lyric_sync_offset(self, offset_seconds: float) -> None:
         try:

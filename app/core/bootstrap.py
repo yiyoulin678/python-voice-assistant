@@ -31,7 +31,7 @@ from app.voice.tts import (
 )
 from app.storage.visual_observation import VisualObservationStore
 from app.core.plugin_manager import MutsukiPluginManager, SakuraPluginManager
-
+from app.task.task_db import TaskDB
 
 PORTRAIT_SCALE_MIN_PERCENT = 50
 PORTRAIT_SCALE_MAX_PERCENT = 150
@@ -139,6 +139,9 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     extension_registry.apply_tools(tool_registry)
     plugin_manager = MutsukiPluginManager(base_dir=base_dir)
     mcp_settings = settings_service.load_mcp_runtime_settings()
+    task_db = TaskDB(
+        base_dir / "users.db"
+    )
     agent_runtime = AgentRuntime(
         api_client=api_client,
         system_prompt=system_prompt,
@@ -210,17 +213,24 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
     errors: list[str] = []
     settings_service = context.settings_service
     character_profile = context.character_profile
+    #print("A: start build_deferred_services")
 
     try:
+        #print("B: before load_tts_settings")
         tts_settings = settings_service.load_tts_settings(
             character_profile=character_profile,
         )
+        #print("C: tts settings loaded")
         if not tts_settings.enabled:
+            #print("D1")
             tts_provider = NullTTSProvider()
         elif tts_settings.provider == TTS_PROVIDER_GENIE:
+            #print("D2")
             tts_provider = GenieTTSProvider(tts_settings)
         else:
+            #print("D3")
             tts_provider = GPTSoVITSTTSProvider(tts_settings)
+        #print("E: tts provider created")
     except TTSConfigError as exc:
         print(f"[TTS] 配置无效，已禁用 TTS：{exc}")
         debug_log("TTS", "配置无效，已禁用 TTS", {"error": str(exc)})
@@ -231,20 +241,24 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
         "TTS Provider 已创建",
         {"provider": type(tts_provider).__name__},
     )
+    #print("F: before whisper")
 
     _preload_whisper_if_enabled(base_dir, settings_service, errors)
+    #print("G: whisper done")
 
     tool_registry = create_builtin_tool_registry(
         base_dir,
         context.memory_store,
         context.reminder_store,
     )
+    #print("H: tool registry done")
     tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
     plugin_manager = MutsukiPluginManager(base_dir=base_dir)
     try:
         plugin_manager.load_from_config(tool_registry)
+        #print("I: plugins done")
     except Exception as exc:  # noqa: BLE001
         print(f"[Plugin] 启动加载失败，已跳过插件：{exc}")
         debug_log("PluginManager", "启动加载失败，已跳过插件", {"error": str(exc)})
@@ -255,6 +269,7 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
         tool_registry,
         runtime_settings=mcp_settings,
     )
+    #print("J: mcp done")
 
     debug_log(
         "Startup",

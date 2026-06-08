@@ -1,5 +1,6 @@
 from __future__ import annotations
 from app.auth.user_db import UserDB
+from app.task import task_db
 from app.ui.login_dialog import LoginDialog
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ from app.ui.subtitle_controller import (
 )
 from app.voice.tts import TTSConfigError
 from app.live2d.runtime import dispose_live2d
-
+from app.task.task_db import TaskDB
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -41,12 +42,29 @@ class DeferredStartupWorker(QObject):
         self.context = context
 
     @Slot()
-    def run(self) -> None:
+    def run(self):
         try:
-            services = build_deferred_services(self.base_dir, self.context)
-            self._move_service_objects_to_ui_thread(services)
-            self.finished.emit(services)
-        except Exception as exc:  # noqa: BLE001
+            services = build_deferred_services(
+                self.base_dir,
+                self.context
+            )
+
+            #print("STEP 3")
+
+            self._move_service_objects_to_ui_thread(
+                services
+            )
+
+            #print("STEP 4")
+
+            self.finished.emit(
+                services
+            )
+
+            #print("STEP 5")
+
+        except Exception as exc:
+            print("ERROR:", exc)
             self.failed.emit(str(exc))
 
     def _move_service_objects_to_ui_thread(self, services: object) -> None:
@@ -59,15 +77,34 @@ class DeferredStartupWorker(QObject):
 
 
 def main() -> int:
+    
+
     hide_attached_console()
     app = QApplication(sys.argv)
     user_db = UserDB(
         BASE_DIR / "users.db"
     )
+    task_db = TaskDB(
+        BASE_DIR / "users.db"
+    )
+    task_db.create_task(
+        1,
+        "测试任务",
+        "你好"
+    )
+
+    print(
+        task_db.get_all_tasks()
+    )
     login_dialog = LoginDialog(user_db)
 
     if login_dialog.exec() != QDialog.DialogCode.Accepted:
         return 0
+    #临时测试
+    #from app.auth.session import UserSession
+    #print(UserSession.user_id)
+    #print(UserSession.username)
+    #print(UserSession.role)
     app.setApplicationName(APP_FULL_NAME)
     app.setQuitOnLastWindowClosed(False)
     app.aboutToQuit.connect(dispose_live2d)
@@ -181,7 +218,13 @@ def _start_deferred_startup(base_dir: Path, pet_window: PetWindow) -> None:
     pet_window.deferred_startup_thread = thread
     pet_window.deferred_startup_worker = worker
     thread.started.connect(worker.run)
-    worker.finished.connect(pet_window.apply_deferred_services)
+    #worker.finished.connect(pet_window.apply_deferred_services)
+    worker.finished.connect(
+        lambda services: (
+            print("SIGNAL RECEIVED"),
+            pet_window.apply_deferred_services(services)
+        )
+    )
     worker.failed.connect(pet_window.handle_deferred_startup_failed)
     worker.finished.connect(thread.quit)
     worker.failed.connect(thread.quit)

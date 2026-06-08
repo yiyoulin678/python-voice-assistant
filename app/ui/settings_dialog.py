@@ -100,6 +100,7 @@ from sdk.types import ToolsTabContribution
 
 from app.auth.session import UserSession
 from app.ui.user_management_tab import UserManagementTab
+from app.ui.task_management_tab import TaskManagementTab
 
 class ApiConnectionTestWorker(QObject):
     succeeded = Signal(str)
@@ -279,7 +280,11 @@ class SettingsDialog(QDialog):
                 UserManagementTab(),
                 "用户管理"
             )
-        
+            tabs.addTab(
+                TaskManagementTab(),
+                "任务管理"
+            )    
+
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
 

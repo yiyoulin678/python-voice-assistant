@@ -83,7 +83,7 @@ class UserDB:
 
         cursor = conn.execute(
             """
-            SELECT role,password_hash
+            SELECT id,role,password_hash
             FROM users
             WHERE username=?
             """,
@@ -97,10 +97,10 @@ class UserDB:
         if not row:
             return None
 
-        role, password_hash = row
+        user_id, role, password_hash = row
 
         if password_hash == self.hash_password(password):
-            return role
+            return user_id, role
 
         return None
     
@@ -230,3 +230,44 @@ class UserDB:
         conn.commit()
 
         conn.close()
+
+    def get_user(
+        self,
+        username: str,
+        password: str
+    ):
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        cursor = conn.execute(
+            """
+            SELECT
+                id,
+                username,
+                role,
+                password_hash
+            FROM users
+            WHERE username=?
+            """,
+            (username,)
+        )
+
+        row = cursor.fetchone()
+
+        conn.close()
+
+        if row is None:
+            return None
+
+        user_id, username, role, password_hash = row
+
+        if password_hash != self.hash_password(password):
+            return None
+
+        return (
+            user_id,
+            username,
+            role
+        )
