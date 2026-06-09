@@ -569,7 +569,12 @@ class PetWindow(QWidget):
         for drag_widget in (self.bubble, self.name_label, self.speech_label):
             drag_widget.installEventFilter(self)
 
-        self.portrait_controller.apply_current()
+        if self._using_live2d:
+            if self.stt_settings.enabled and hasattr(self, "voice_button"):
+                self.voice_button.setToolTip(
+                    "点击开始/结束录音；或长按安安说话，松手结束并识别"
+                )
+        self._apply_panel_layout()
         if self._using_live2d:
             self._init_live2d_hover_ui()
         self._create_tray_icon()
@@ -2731,7 +2736,6 @@ class PetWindow(QWidget):
         )
 
     def _maybe_start_memory_backfill(self) -> None:
-        #print("MEMORY BACKFILL START")
         if getattr(self, "startup_initializing", False):
             return
         if not self.memory_curation_settings.enabled:
@@ -2894,6 +2898,8 @@ class PetWindow(QWidget):
         self._set_busy(False)
         self.reminder_timer.start()
         self._sync_proactive_care_timer()
+        self._start_napcat_bridge_if_enabled()
+        QTimer.singleShot(0, self._maybe_start_memory_backfill)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log(
@@ -3423,6 +3429,7 @@ class PetWindow(QWidget):
             on_open_napcat_console=self.show_napcat_console,
             subtitle_language=self.subtitle_language,
             free_access_enabled=self.free_access_enabled,
+            agent_runtime=self.agent_runtime,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

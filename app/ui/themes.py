@@ -453,6 +453,86 @@ def build_settings_dialog_stylesheet(theme_id: str | None) -> str:
             """
 
 
+def build_auth_dialog_stylesheet(theme_id: str | None) -> str:
+    palette = ui_theme_palette(theme_id)
+    base = build_settings_dialog_stylesheet(theme_id)
+    return (
+        base
+        + f"""
+            QDialog#authDialog {{
+                background: {palette.dialog_bg};
+            }}
+            QLabel#authTitle {{
+                color: {palette.tab_selected_text};
+                font-size: 28px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+            }}
+            QLabel#authSubtitle {{
+                color: {palette.hint_text};
+                font-size: 13px;
+            }}
+            QLabel#authFieldLabel {{
+                color: {palette.tab_text};
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QLabel#authHint {{
+                color: {palette.hint_text};
+                font-size: 12px;
+            }}
+            QFrame#authCard {{
+                background: {palette.tab_pane_bg};
+                border: 1px solid {palette.tab_pane_border};
+                border-radius: 14px;
+            }}
+            QFrame#authAccentBar {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {palette.button_bg},
+                    stop:1 {palette.tab_pane_border}
+                );
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+                min-height: 5px;
+                max-height: 5px;
+            }}
+            QLineEdit#authInput {{
+                min-height: 34px;
+                padding: 8px 12px;
+                font-size: 14px;
+            }}
+            QPushButton#authPrimaryButton {{
+                background: {palette.button_bg};
+                border: 1px solid {palette.button_active_bg};
+                border-radius: 10px;
+                color: #ffffff;
+                min-height: 40px;
+                font-size: 15px;
+                font-weight: 700;
+                padding: 10px 16px;
+            }}
+            QPushButton#authPrimaryButton:hover {{
+                background: {palette.button_hover_bg};
+            }}
+            QPushButton#authSecondaryButton {{
+                background: {palette.secondary_button_bg};
+                border: 1px solid {palette.secondary_button_border};
+                border-radius: 10px;
+                color: {palette.tab_text};
+                min-height: 38px;
+                font-size: 14px;
+                font-weight: 600;
+                padding: 8px 16px;
+            }}
+            QPushButton#authSecondaryButton:hover {{
+                background: {palette.secondary_button_hover_bg};
+                color: {palette.tab_selected_text};
+            }}
+            """
+    )
+
+
 def build_history_window_stylesheet(theme_id: str | None) -> str:
     palette = ui_theme_palette(theme_id)
     return f"""

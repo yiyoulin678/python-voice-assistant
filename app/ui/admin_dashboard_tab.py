@@ -10,22 +10,18 @@ from PySide6.QtWidgets import (
 )
 
 from app.auth.user_db import UserDB
-from app.auth.session import UserSession
+from app.auth.session import UserSession, role_display_name, user_database_path
 from app.task.task_db import TaskDB
 
 
 class AdminDashboardTab(QWidget):
 
-    def __init__(self):
+    def __init__(self, base_dir: Path) -> None:
         super().__init__()
 
-        self.user_db = UserDB(
-            Path("users.db")
-        )
-
-        self.task_db = TaskDB(
-            Path("users.db")
-        )
+        db_path = user_database_path(base_dir)
+        self.user_db = UserDB(db_path)
+        self.task_db = TaskDB(db_path)
 
         main_layout = QVBoxLayout(self)
 
@@ -189,5 +185,5 @@ class AdminDashboardTab(QWidget):
         )
 
         self.role_edit.setText(
-            UserSession.role
+            role_display_name(UserSession.role)
         )

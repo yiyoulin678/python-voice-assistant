@@ -14,16 +14,15 @@ from PySide6.QtWidgets import (
 )
 
 from app.auth.user_db import UserDB
+from app.auth.session import user_database_path
 
 
 class UserManagementTab(QWidget):
 
-    def __init__(self):
+    def __init__(self, base_dir: Path) -> None:
         super().__init__()
 
-        self.user_db = UserDB(
-            Path("users.db")
-        )
+        self.user_db = UserDB(user_database_path(base_dir))
 
         layout = QVBoxLayout(self)
 

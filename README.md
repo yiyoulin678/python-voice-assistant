@@ -127,10 +127,12 @@ Mutsuki/
 .\start.bat
 ```
 
+`start.bat` / `start.vbs` 会**无控制台窗口**启动（优先 `pythonw.exe`）。排错时用 `start-console.bat`，错误会留在 CMD 里。
+
 或直接：
 
 ```powershell
-.\runtime\python.exe main.py
+.\runtime\pythonw.exe main.py
 ```
 
 首次运行前在 **设置** 中配置 LLM API（`data/config/api.yaml`）。  

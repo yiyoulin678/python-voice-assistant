@@ -65,6 +65,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ''
 Write-Host '========================================'
-Write-Host '  Done. Double-click start.bat to run'
+Write-Host '  Done. Double-click start.bat to run (no console window).'
+Write-Host '  For debugging, use start-console.bat instead.'
 Write-Host '========================================'
 Read-Host 'Press Enter to exit'

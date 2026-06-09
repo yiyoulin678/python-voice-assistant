@@ -66,6 +66,8 @@ class AgentRuntime:
         reply_portraits: list[str] | None = None,
         tools: ToolRegistry | None = None,
         memory: MemoryStore | None = None,
+        knowledge_base: KnowledgeBase | None = None,
+        metrics: AiMetricsRecorder | None = None,
         task_db: TaskDB | None = None,
     ) -> None:
         self.api_client = api_client
@@ -76,15 +78,11 @@ class AgentRuntime:
         self.memory = memory or MemoryStore()
         self.knowledge_base = knowledge_base
         self.metrics = metrics
+        self.task_db = task_db
         self._turn_messages: list[ChatMessage] = []
         self.model_vision_enabled = True
         self.autonomous_screen_observation_enabled = True
-        self.task_db = task_db
-        #测试用打印函数
-        print(
-            "TASK DB =",
-            self.task_db
-        )
+        self.strict_ja_zh_correspondence_enabled = False
 
     def update_character(
         self,

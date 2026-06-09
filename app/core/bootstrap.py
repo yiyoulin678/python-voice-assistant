@@ -34,6 +34,7 @@ from app.voice.tts import (
 )
 from app.storage.visual_observation import VisualObservationStore
 from app.core.plugin_manager import MutsukiPluginManager, SakuraPluginManager
+from app.auth.session import user_database_path
 from app.task.task_db import TaskDB
 
 PORTRAIT_SCALE_MIN_PERCENT = 20
@@ -151,9 +152,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     extension_registry.apply_tools(tool_registry)
     plugin_manager = MutsukiPluginManager(base_dir=base_dir)
     mcp_settings = settings_service.load_mcp_runtime_settings()
-    task_db = TaskDB(
-        base_dir / "users.db"
-    )
+    pet_ui_settings = settings_service.load_pet_ui_settings()
+    task_db = TaskDB(user_database_path(base_dir))
     agent_runtime = AgentRuntime(
         api_client=api_client,
         system_prompt=system_prompt,
@@ -163,6 +163,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         memory=memory_store,
         knowledge_base=knowledge_base,
         metrics=ai_metrics,
+        task_db=task_db,
     )
     agent_runtime.set_strict_ja_zh_correspondence_enabled(
         pet_ui_settings.strict_ja_zh_correspondence_enabled
@@ -262,6 +263,7 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
         context.reminder_store,
         knowledge_base=knowledge_base,
     )
+    context.agent_runtime.knowledge_base = knowledge_base
     tool_registry.set_free_access_enabled(context.tool_registry.free_access_enabled)
     extension_registry = ExtensionRegistry()
     extension_registry.apply_tools(tool_registry)
@@ -278,7 +280,6 @@ def build_deferred_services(base_dir: Path, context: AppContext) -> DeferredStar
         tool_registry,
         runtime_settings=mcp_settings,
     )
-    #print("J: mcp done")
 
     debug_log(
         "Startup",

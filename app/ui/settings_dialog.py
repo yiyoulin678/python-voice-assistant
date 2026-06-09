@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.agent import AgentRuntime
 from app.agent.memory import MemoryStore
 from app.config.ai_settings import AiFeatureSettings
 from app.agent.mcp import MCPRuntimeSettings
@@ -126,6 +127,7 @@ from app.ui.settings_scroll import wrap_scrollable
 from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
 from sdk.types import ToolsTabContribution
 
+from app.auth.permissions import is_admin
 from app.auth.session import UserSession
 from app.ui.user_management_tab import UserManagementTab
 from app.ui.task_management_tab import TaskManagementTab
@@ -223,9 +225,11 @@ class SettingsDialog(QDialog):
         on_open_napcat_console: Callable[[], None] | None = None,
         subtitle_language: str = SUBTITLE_LANGUAGE_ZH,
         free_access_enabled: bool = False,
+        agent_runtime: AgentRuntime | None = None,
     ) -> None:
         super().__init__(parent)
         self.base_dir = base_dir
+        self.agent_runtime = agent_runtime
         settings_service = AppSettingsService(base_dir=base_dir)
         self.tts_settings = tts_settings
         self.stt_settings = stt_settings or settings_service.load_stt_settings()
@@ -320,21 +324,15 @@ class SettingsDialog(QDialog):
         )
         tabs.addTab(self._build_platform_tab(self.napcat_settings), "平台")
         tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
-        tabs.addTab(MyAccountTab(), "我的账户")
+        tabs.addTab(MyAccountTab(self.base_dir), "我的账户")
 
-        if UserSession.role == "admin":
+        if is_admin(UserSession.role):
+            tabs.addTab(UserManagementTab(self.base_dir), "用户管理")
             tabs.addTab(
-                UserManagementTab(),
-                "用户管理"
+                TaskManagementTab(self.base_dir, self.agent_runtime),
+                "任务管理",
             )
-            tabs.addTab(
-                TaskManagementTab(),
-                "任务管理"
-            ) 
-            tabs.addTab(
-                AdminDashboardTab(),
-                "管理后台"
-            )
+            tabs.addTab(AdminDashboardTab(self.base_dir), "管理后台")
               
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")

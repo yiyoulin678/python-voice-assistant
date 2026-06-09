@@ -1,4 +1,9 @@
+from __future__ import annotations
+
+from datetime import datetime
 import sqlite3
+
+from app.task.constants import STATUS_DONE, STATUS_FAILED, STATUS_PENDING
 
 
 class TaskDB:
@@ -37,21 +42,24 @@ class TaskDB:
         prompt: str
     ):
 
+        created_at = datetime.now().astimezone().isoformat(timespec="seconds")
         cursor = self.conn.execute(
             """
             INSERT INTO ai_tasks(
                 user_id,
                 title,
                 prompt,
-                status
+                status,
+                created_at
             )
-            VALUES(?,?,?,?)
+            VALUES(?,?,?,?,?)
             """,
             (
                 user_id,
                 title,
                 prompt,
-                "pending"
+                STATUS_PENDING,
+                created_at,
             )
         )
 
@@ -201,8 +209,26 @@ class TaskDB:
             """
             SELECT COUNT(*)
             FROM ai_tasks
-            WHERE status='done'
+            WHERE status IN ('done', 'finished')
             """
         )
 
         return cursor.fetchone()[0]
+
+    def list_runnable_task_ids(
+        self,
+        *,
+        user_id: int | None = None,
+    ) -> list[int]:
+        query = """
+            SELECT id
+            FROM ai_tasks
+            WHERE status IN (?, ?)
+        """
+        params: list[object] = [STATUS_PENDING, STATUS_FAILED]
+        if user_id is not None:
+            query += " AND user_id=?"
+            params.append(user_id)
+        query += " ORDER BY id ASC"
+        cursor = self.conn.execute(query, params)
+        return [int(row[0]) for row in cursor.fetchall()]
