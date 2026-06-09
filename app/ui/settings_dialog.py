@@ -129,6 +129,7 @@ from sdk.types import ToolsTabContribution
 from app.auth.session import UserSession
 from app.ui.user_management_tab import UserManagementTab
 from app.ui.task_management_tab import TaskManagementTab
+from app.ui.my_account_tab import MyAccountTab
 
 class ApiConnectionTestWorker(QObject):
     succeeded = Signal(str)
@@ -318,6 +319,7 @@ class SettingsDialog(QDialog):
         )
         tabs.addTab(self._build_platform_tab(self.napcat_settings), "平台")
         tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
+        tabs.addTab(MyAccountTab(), "我的账户")
 
         if UserSession.role == "admin":
             tabs.addTab(

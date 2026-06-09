@@ -271,3 +271,58 @@ class UserDB:
             username,
             role
         )
+    
+    def change_password(
+        self,
+        username: str,
+        old_password: str,
+        new_password: str
+    ):
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        cursor = conn.execute(
+            """
+            SELECT password_hash
+            FROM users
+            WHERE username=?
+            """,
+            (username,)
+        )
+
+        row = cursor.fetchone()
+
+        if row is None:
+
+            conn.close()
+            return False
+
+        password_hash = row[0]
+
+        if password_hash != self.hash_password(
+            old_password
+        ):
+
+            conn.close()
+            return False
+
+        conn.execute(
+            """
+            UPDATE users
+            SET password_hash=?
+            WHERE username=?
+            """,
+            (
+                self.hash_password(
+                    new_password
+                ),
+                username
+            )
+        )
+
+        conn.commit()
+        conn.close()
+
+        return True
