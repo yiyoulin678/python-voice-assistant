@@ -166,7 +166,16 @@ def load_character_system_prompt(
     profile: CharacterProfile,
     *,
     append_desktop_pet_rules: bool = False,
+    db_path: Path | None = None,
 ) -> str:
+    if db_path is not None:
+        from app.character.persona_service import resolve_persona_text
+
+        content = resolve_persona_text(profile, db_path)
+        return finalize_character_prompt(
+            content,
+            append_desktop_pet_rules=append_desktop_pet_rules,
+        )
     return load_system_prompt(
         profile.card_path,
         append_desktop_pet_rules=append_desktop_pet_rules,

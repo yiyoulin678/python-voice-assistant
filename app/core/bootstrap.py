@@ -35,6 +35,7 @@ from app.voice.tts import (
 from app.storage.visual_observation import VisualObservationStore
 from app.core.plugin_manager import MutsukiPluginManager, SakuraPluginManager
 from app.auth.session import user_database_path
+from app.character.persona_db import CharacterPersonaDB
 from app.task.task_db import TaskDB
 
 PORTRAIT_SCALE_MIN_PERCENT = 20
@@ -85,6 +86,8 @@ def load_startup_state(base_dir: Path) -> StartupState:
     )
 
     character_registry = CharacterRegistry(base_dir)
+    persona_db = CharacterPersonaDB(user_database_path(base_dir))
+    persona_db.seed_missing_from_registry(character_registry)
     character_profile = character_registry.get(
         settings_service.load_current_character_id(character_registry)
     )
@@ -92,6 +95,7 @@ def load_startup_state(base_dir: Path) -> StartupState:
     system_prompt = load_character_system_prompt(
         character_profile,
         append_desktop_pet_rules=pet_ui_settings.desktop_pet_rules_enabled,
+        db_path=user_database_path(base_dir),
     )
     debug_log(
         "Startup",

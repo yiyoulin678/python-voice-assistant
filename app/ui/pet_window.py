@@ -60,6 +60,7 @@ from app.agent.memory_curator import (
 )
 from app.agent.memory_curation_worker import MemoryCurationWorker
 from app.agent.screen_tools import SCREEN_OBSERVATION_REQUEST_ACTION
+from app.auth.session import user_database_path
 from app.config.deskpet_settings import normalize_panel_width_percent
 from app.core.app_context import AppContext
 from app.config.character_loader import (
@@ -3867,6 +3868,7 @@ class PetWindow(QWidget):
             self.system_prompt = load_character_system_prompt(
                 self.character_profile,
                 append_desktop_pet_rules=self.desktop_pet_rules_enabled,
+                db_path=user_database_path(self.base_dir),
             )
             self.agent_runtime.update_character(
                 self.system_prompt,
@@ -4162,6 +4164,7 @@ class PetWindow(QWidget):
         self.system_prompt = load_character_system_prompt(
             profile,
             append_desktop_pet_rules=self.desktop_pet_rules_enabled,
+            db_path=user_database_path(self.base_dir),
         )
         self.memory_store.set_scope(profile.id)
         self.agent_runtime.update_character(self.system_prompt, profile.reply_tones, profile.portrait_choices)

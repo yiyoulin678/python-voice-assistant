@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from app.auth.user_db import UserDB
 from app.auth.session import UserSession, role_display_name, user_database_path
+from app.character.persona_db import CharacterPersonaDB
 from app.task.task_db import TaskDB
 
 
@@ -22,6 +23,7 @@ class AdminDashboardTab(QWidget):
         db_path = user_database_path(base_dir)
         self.user_db = UserDB(db_path)
         self.task_db = TaskDB(db_path)
+        self.persona_db = CharacterPersonaDB(db_path)
 
         main_layout = QVBoxLayout(self)
 
@@ -38,6 +40,9 @@ class AdminDashboardTab(QWidget):
         self.admin_count_edit = QLineEdit()
         self.admin_count_edit.setReadOnly(True)
 
+        self.persona_count_edit = QLineEdit()
+        self.persona_count_edit.setReadOnly(True)
+
         stats_form.addRow(
             "用户总数",
             self.user_count_edit
@@ -46,6 +51,11 @@ class AdminDashboardTab(QWidget):
         stats_form.addRow(
             "管理员数量",
             self.admin_count_edit
+        )
+
+        stats_form.addRow(
+            "人设记录数",
+            self.persona_count_edit
         )
 
         stats_group.setLayout(
@@ -154,6 +164,8 @@ class AdminDashboardTab(QWidget):
 
         admins = self.user_db.get_admin_count()
 
+        personas = self.persona_db.count()
+
         tasks = self.task_db.get_task_count()
 
         pending = self.task_db.get_pending_count()
@@ -166,6 +178,10 @@ class AdminDashboardTab(QWidget):
 
         self.admin_count_edit.setText(
             str(admins)
+        )
+
+        self.persona_count_edit.setText(
+            str(personas)
         )
 
         self.task_count_edit.setText(

@@ -86,9 +86,12 @@ class AppBuilder:
             self._settings_service.load_current_character_id(self._character_registry)
         )
         pet_ui_settings = self._settings_service.load_pet_ui_settings()
+        from app.auth.session import user_database_path
+
         self._system_prompt = load_character_system_prompt(
             self._character_profile,
             append_desktop_pet_rules=pet_ui_settings.desktop_pet_rules_enabled,
+            db_path=user_database_path(self.base_dir),
         )
         return self
 

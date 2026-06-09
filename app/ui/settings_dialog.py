@@ -67,8 +67,6 @@ from app.config.character_loader import (
     CharacterConfigError,
     CharacterProfile,
     CharacterRegistry,
-    read_character_card,
-    write_character_card,
 )
 from app.ui.themes import (
     UI_THEME_CHOICES,
@@ -128,11 +126,13 @@ from app.ui.tts_bundle_dialog import TTSBundleDownloadDialog
 from sdk.types import ToolsTabContribution
 
 from app.auth.permissions import is_admin
-from app.auth.session import UserSession
+from app.auth.session import UserSession, user_database_path
+from app.character.persona_service import read_effective_persona, save_persona
 from app.ui.user_management_tab import UserManagementTab
 from app.ui.task_management_tab import TaskManagementTab
 from app.ui.my_account_tab import MyAccountTab
 from app.ui.admin_dashboard_tab import AdminDashboardTab
+from app.ui.character_persona_management_tab import CharacterPersonaManagementTab
 
 class ApiConnectionTestWorker(QObject):
     succeeded = Signal(str)
@@ -394,6 +394,7 @@ class SettingsDialog(QDialog):
         admin_tabs.setDocumentMode(True)
         admin_tabs.addTab(AdminDashboardTab(self.base_dir), "概览")
         admin_tabs.addTab(UserManagementTab(self.base_dir), "用户")
+        admin_tabs.addTab(CharacterPersonaManagementTab(self.base_dir), "人设")
         admin_tabs.addTab(
             TaskManagementTab(self.base_dir, self.agent_runtime),
             "任务",
@@ -2174,7 +2175,7 @@ class SettingsDialog(QDialog):
         if hasattr(self, "character_card_hint"):
             self.character_card_hint.setEnabled(True)
         try:
-            content = read_character_card(profile)
+            content = read_effective_persona(profile, user_database_path(self.base_dir))
         except CharacterConfigError as exc:
             self.character_card_edit.setPlainText("")
             self.character_card_edit.setEnabled(False)
@@ -2191,7 +2192,7 @@ class SettingsDialog(QDialog):
             self.character_card_hint.setStyleSheet(f"color: {palette.hint_text};")
             self.character_card_hint.setText(
                 f"正在编辑：{profile.display_name}（{profile.card_path.name}）\n"
-                "人设会作为系统提示词影响回复风格。保存后立即作用于后续对话。"
+                "人设优先从 SQLite 读取，保存时同步写入数据库与角色包 card。"
             )
 
     def _save_selected_character_card(self) -> bool:
@@ -2202,8 +2203,11 @@ class SettingsDialog(QDialog):
             return True
         content = self.character_card_edit.toPlainText()
         try:
-            write_character_card(profile, content)
+            save_persona(profile, content, user_database_path(self.base_dir))
         except CharacterConfigError as exc:
+            QMessageBox.warning(self, "人设保存失败", str(exc))
+            return False
+        except ValueError as exc:
             QMessageBox.warning(self, "人设保存失败", str(exc))
             return False
         return True
