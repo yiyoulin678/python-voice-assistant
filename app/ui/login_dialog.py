@@ -51,7 +51,6 @@ class LoginDialog(QDialog):
             username,
             self.password_edit.text()
         )
-        print("LOGIN RESULT =", result)
 
         if result is None:
             QMessageBox.warning(

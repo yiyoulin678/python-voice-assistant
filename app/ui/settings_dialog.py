@@ -130,6 +130,7 @@ from app.auth.session import UserSession
 from app.ui.user_management_tab import UserManagementTab
 from app.ui.task_management_tab import TaskManagementTab
 from app.ui.my_account_tab import MyAccountTab
+from app.ui.admin_dashboard_tab import AdminDashboardTab
 
 class ApiConnectionTestWorker(QObject):
     succeeded = Signal(str)
@@ -329,8 +330,12 @@ class SettingsDialog(QDialog):
             tabs.addTab(
                 TaskManagementTab(),
                 "任务管理"
-            )    
-
+            ) 
+            tabs.addTab(
+                AdminDashboardTab(),
+                "管理后台"
+            )
+              
         if memory_store is not None:
             tabs.addTab(self._build_memory_tab(memory_store), "记忆")
         self._ai_tab_index = tabs.addTab(QWidget(self), "AI")

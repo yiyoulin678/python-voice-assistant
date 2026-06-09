@@ -171,3 +171,38 @@ class TaskDB:
         )
 
         return cursor.fetchone()
+    
+    def get_task_count(self):
+
+        cursor = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM ai_tasks
+            """
+        )
+
+        return cursor.fetchone()[0]
+    
+    def get_pending_count(self):
+
+        cursor = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM ai_tasks
+            WHERE status='pending'
+            """
+        )
+
+        return cursor.fetchone()[0]
+    
+    def get_done_count(self):
+
+        cursor = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM ai_tasks
+            WHERE status='done'
+            """
+        )
+
+        return cursor.fetchone()[0]

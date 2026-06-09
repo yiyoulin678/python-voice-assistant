@@ -563,18 +563,13 @@ class PetWindow(QWidget):
             )
         self._apply_ui_theme(self.ui_theme)
         self._apply_fonts()
-        #print("PET A")
         self._load_reply_history_from_store()
-        #print("PET B")
         self._update_reply_history_buttons()
-        #   print("PET C")
         self._install_portrait_drag_filters()
         for drag_widget in (self.bubble, self.name_label, self.speech_label):
             drag_widget.installEventFilter(self)
-        #print("PET D")
 
         self.portrait_controller.apply_current()
-        #print("PET E")
         if self._using_live2d:
             self._init_live2d_hover_ui()
         self._create_tray_icon()
@@ -2872,7 +2867,6 @@ class PetWindow(QWidget):
     @Slot(object)
     def apply_deferred_services(self, services: "DeferredStartupServices") -> None:
         """后台启动服务就绪后注入同一个真实主窗口。"""
-        #print("APPLY 1")
 
         self._move_tts_provider_to_ui_thread(services.tts_provider)
         if self.mcp_tool_provider is not None and self.mcp_tool_provider is not services.mcp_tool_provider:
@@ -2900,7 +2894,6 @@ class PetWindow(QWidget):
         self._set_busy(False)
         self.reminder_timer.start()
         self._sync_proactive_care_timer()
-        #QTimer.singleShot(0, self._maybe_start_memory_backfill)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
         debug_log(
@@ -2922,7 +2915,6 @@ class PetWindow(QWidget):
                 self._show_tts_error(error)
             elif error.startswith("语音识别"):
                 QMessageBox.warning(self, "语音识别", error)
-        #print("Apply end")
 
     @Slot(str)
     def handle_deferred_startup_failed(self, error: str) -> None:

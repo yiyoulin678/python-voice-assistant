@@ -49,19 +49,18 @@ class DeferredStartupWorker(QObject):
                 self.context
             )
 
-            #print("STEP 3")
+            
 
             self._move_service_objects_to_ui_thread(
                 services
             )
 
-            #print("STEP 4")
 
             self.finished.emit(
                 services
             )
 
-            #print("STEP 5")
+            
 
         except Exception as exc:
             print("ERROR:", exc)
@@ -100,11 +99,7 @@ def main() -> int:
 
     if login_dialog.exec() != QDialog.DialogCode.Accepted:
         return 0
-    #临时测试
-    #from app.auth.session import UserSession
-    #print(UserSession.user_id)
-    #print(UserSession.username)
-    #print(UserSession.role)
+    
     app.setApplicationName(APP_FULL_NAME)
     app.setQuitOnLastWindowClosed(False)
     app.aboutToQuit.connect(dispose_live2d)
@@ -218,7 +213,6 @@ def _start_deferred_startup(base_dir: Path, pet_window: PetWindow) -> None:
     pet_window.deferred_startup_thread = thread
     pet_window.deferred_startup_worker = worker
     thread.started.connect(worker.run)
-    #worker.finished.connect(pet_window.apply_deferred_services)
     worker.finished.connect(
         lambda services: (
             print("SIGNAL RECEIVED"),

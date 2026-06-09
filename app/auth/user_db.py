@@ -326,3 +326,42 @@ class UserDB:
         conn.close()
 
         return True
+
+    def get_user_count(self):
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM users
+            """
+        )
+
+        count = cursor.fetchone()[0]
+
+        conn.close()
+
+        return count
+    
+    def get_admin_count(self):
+
+        conn = sqlite3.connect(
+            self.db_path
+        )
+
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM users
+            WHERE role='admin'
+            """
+        )
+
+        count = cursor.fetchone()[0]
+
+        conn.close()
+
+        return count
