@@ -263,6 +263,9 @@ class SettingsDialog(QDialog):
             reply_segment_pause_ms,
         )
         self.memory_store = memory_store
+        self.proactive_care_settings = (
+            proactive_care_settings or ProactiveCareSettings()
+        )
         self._all_memories: list[dict[str, object]] = []
         self._visible_memories: list[dict[str, object]] = []
         self._selected_memory_ids: set[str] = set()
@@ -307,35 +310,23 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_character_tab(character_registry, current_character), "角色")
         tabs.addTab(self._build_deskpet_tab(), "桌宠")
         tabs.addTab(self._build_api_tab(api_settings), "API")
-        tabs.addTab(self._build_tts_tab(tts_settings), "TTS")
-        tabs.addTab(self._build_stt_tab(self.stt_settings), "语音输入")
+        tabs.addTab(self._build_voice_tab(tts_settings, self.stt_settings), "语音")
         tabs.addTab(
-            self._build_privacy_tab(
-                proactive_care_settings or ProactiveCareSettings(),
-            ),
-            "隐私",
-        )
-        tabs.addTab(
-            self._build_mcp_tab(
+            self._build_extensions_tab(
                 mcp_settings or MCPRuntimeSettings(),
                 tools_tab_contributions or [],
             ),
-            "工具",
+            "扩展",
         )
-        tabs.addTab(self._build_platform_tab(self.napcat_settings), "平台")
-        tabs.addTab(self._build_system_tab(debug_log_settings or DebugLogSettings()), "系统")
-        tabs.addTab(MyAccountTab(self.base_dir), "我的账户")
+        tabs.addTab(
+            self._build_system_tab(debug_log_settings or DebugLogSettings()),
+            "系统",
+        )
+        tabs.addTab(MyAccountTab(self.base_dir), "账户")
 
         if is_admin(UserSession.role):
-            tabs.addTab(UserManagementTab(self.base_dir), "用户管理")
-            tabs.addTab(
-                TaskManagementTab(self.base_dir, self.agent_runtime),
-                "任务管理",
-            )
-            tabs.addTab(AdminDashboardTab(self.base_dir), "管理后台")
-              
-        if memory_store is not None:
-            tabs.addTab(self._build_memory_tab(memory_store), "记忆")
+            tabs.addTab(self._build_admin_tab(), "管理")
+
         self._ai_tab_index = tabs.addTab(QWidget(self), "AI")
 
         buttons = QDialogButtonBox(
@@ -352,6 +343,62 @@ class SettingsDialog(QDialog):
         self.setLayout(layout)
         tabs.currentChanged.connect(self._on_settings_tab_changed)
         self._apply_dialog_theme(self.pet_ui_settings.normalized().ui_theme)
+
+    def _settings_section_label(self, title: str) -> QLabel:
+        label = QLabel(title, self)
+        label.setObjectName("settingsSectionLabel")
+        return label
+
+    def _compose_settings_sections(
+        self,
+        sections: list[tuple[str, QWidget]],
+    ) -> QWidget:
+        container = QWidget(self)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        for index, (title, widget) in enumerate(sections):
+            if index > 0:
+                layout.addSpacing(4)
+            layout.addWidget(self._settings_section_label(title))
+            layout.addWidget(widget)
+        layout.addStretch(1)
+        return wrap_scrollable(container)
+
+    def _build_voice_tab(
+        self,
+        tts_settings: GPTSoVITSTTSSettings,
+        stt_settings: STTSettings,
+    ) -> QWidget:
+        return self._compose_settings_sections(
+            [
+                ("语音合成（TTS）", self._build_tts_tab(tts_settings)),
+                ("语音输入（STT）", self._build_stt_tab(stt_settings)),
+            ]
+        )
+
+    def _build_extensions_tab(
+        self,
+        mcp_settings: MCPRuntimeSettings,
+        tools_tab_contributions: list[ToolsTabContribution],
+    ) -> QWidget:
+        return self._compose_settings_sections(
+            [
+                ("工具与 MCP", self._build_mcp_tab(mcp_settings, tools_tab_contributions)),
+                ("平台接入", self._build_platform_tab(self.napcat_settings)),
+            ]
+        )
+
+    def _build_admin_tab(self) -> QWidget:
+        admin_tabs = QTabWidget(self)
+        admin_tabs.setDocumentMode(True)
+        admin_tabs.addTab(AdminDashboardTab(self.base_dir), "概览")
+        admin_tabs.addTab(UserManagementTab(self.base_dir), "用户")
+        admin_tabs.addTab(
+            TaskManagementTab(self.base_dir, self.agent_runtime),
+            "任务",
+        )
+        return admin_tabs
 
     def _build_character_tab(
         self,
@@ -528,6 +575,12 @@ class SettingsDialog(QDialog):
             self.memory_preview_label.setStyleSheet(f"color: {palette.system_text};")
         if hasattr(self, "character_card_hint"):
             self.character_card_hint.setStyleSheet(f"color: {palette.hint_text};")
+        section_style = (
+            f"color: {palette.tab_selected_text};"
+            " font-size: 15px; font-weight: 700; padding: 8px 4px 2px 4px;"
+        )
+        for label in self.findChildren(QLabel, "settingsSectionLabel"):
+            label.setStyleSheet(section_style)
 
     def _build_character_archive_controls(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
@@ -1036,24 +1089,24 @@ class SettingsDialog(QDialog):
         return tab
 
     def _build_system_tab(self, debug_settings: DebugLogSettings) -> QWidget:
-        tab = QWidget(self)
-        self.debug_log_enabled_check = QCheckBox("输出终端调试日志", tab)
+        system_body = QWidget(self)
+        self.debug_log_enabled_check = QCheckBox("输出终端调试日志", system_body)
         self.debug_log_enabled_check.setChecked(debug_settings.enabled)
-        self.debug_body_enabled_check = QCheckBox("输出完整请求/回复正文", tab)
+        self.debug_body_enabled_check = QCheckBox("输出完整请求/回复正文", system_body)
         self.debug_body_enabled_check.setChecked(debug_settings.body_enabled)
         self.debug_log_enabled_check.toggled.connect(self.debug_body_enabled_check.setEnabled)
         self.debug_body_enabled_check.setEnabled(self.debug_log_enabled_check.isChecked())
-        self.debug_file_enabled_check = QCheckBox("输出文件运行日志", tab)
+        self.debug_file_enabled_check = QCheckBox("输出文件运行日志", system_body)
         self.debug_file_enabled_check.setChecked(debug_settings.file_enabled)
 
         normalized_memory = self.memory_curation_settings
-        self.memory_curation_enabled_check = QCheckBox("自动整理长期记忆", tab)
+        self.memory_curation_enabled_check = QCheckBox("自动整理长期记忆", system_body)
         self.memory_curation_enabled_check.setChecked(normalized_memory.enabled)
-        self.memory_curation_trigger_spin = QSpinBox(tab)
+        self.memory_curation_trigger_spin = QSpinBox(system_body)
         self.memory_curation_trigger_spin.setRange(2, 50)
         self.memory_curation_trigger_spin.setSuffix(" 轮对话")
         self.memory_curation_trigger_spin.setValue(normalized_memory.trigger_turns)
-        self.memory_curation_backfill_spin = QSpinBox(tab)
+        self.memory_curation_backfill_spin = QSpinBox(system_body)
         self.memory_curation_backfill_spin.setRange(20, 500)
         self.memory_curation_backfill_spin.setSuffix(" 条")
         self.memory_curation_backfill_spin.setValue(normalized_memory.backfill_limit)
@@ -1064,7 +1117,7 @@ class SettingsDialog(QDialog):
             self.memory_curation_enabled_check.isChecked()
         )
 
-        self.subtitle_typing_interval_spin = QSpinBox(tab)
+        self.subtitle_typing_interval_spin = QSpinBox(system_body)
         self.subtitle_typing_interval_spin.setRange(
             SUBTITLE_TYPING_INTERVAL_MIN_MS,
             SUBTITLE_TYPING_INTERVAL_MAX_MS,
@@ -1072,7 +1125,7 @@ class SettingsDialog(QDialog):
         self.subtitle_typing_interval_spin.setSuffix(" 毫秒")
         self.subtitle_typing_interval_spin.setValue(self.subtitle_typing_interval_ms)
 
-        self.reply_segment_pause_spin = QSpinBox(tab)
+        self.reply_segment_pause_spin = QSpinBox(system_body)
         self.reply_segment_pause_spin.setRange(
             REPLY_SEGMENT_PAUSE_MIN_MS,
             REPLY_SEGMENT_PAUSE_MAX_MS,
@@ -1092,14 +1145,25 @@ class SettingsDialog(QDialog):
         form_layout.addRow("字幕逐字间隔", self.subtitle_typing_interval_spin)
         form_layout.addRow("回复分段停顿", self.reply_segment_pause_spin)
 
-        restart_button = QPushButton("重启 Mutsuki", tab)
+        restart_button = QPushButton("重启 Mutsuki", system_body)
         restart_button.clicked.connect(self._restart_application_from_settings)
-        restart_hint = QLabel("修改 API/语音/MCP 等配置后，可一键重启使全部设置生效。", tab)
-        restart_hint.setWordWrap(True)
+        self.restart_hint = QLabel(
+            "修改 API/语音/MCP 等配置后，可一键重启使全部设置生效。",
+            system_body,
+        )
+        self.restart_hint.setWordWrap(True)
         form_layout.addRow(restart_button)
-        form_layout.addRow(restart_hint)
-        tab.setLayout(form_layout)
-        return wrap_scrollable(tab)
+        form_layout.addRow(self.restart_hint)
+        system_body.setLayout(form_layout)
+        return self._compose_settings_sections(
+            [
+                (
+                    "隐私与主动搭话",
+                    self._build_privacy_tab(self.proactive_care_settings),
+                ),
+                ("系统与调试", system_body),
+            ]
+        )
 
     @Slot()
     def _restart_application_from_settings(self) -> None:
@@ -1144,15 +1208,31 @@ class SettingsDialog(QDialog):
         if self._ai_tab_index is None or index != self._ai_tab_index:
             return
         if not self._ai_panel_loaded:
-            panel = AiSettingsPanel(self.base_dir, self.ai_feature_settings, self)
-            self.ai_settings_panel = panel
+            sections: list[tuple[str, QWidget]] = []
+            if self.memory_store is not None:
+                sections.append(
+                    ("长期记忆", self._build_memory_tab(self.memory_store, embed=True)),
+                )
+            ai_panel = AiSettingsPanel(self.base_dir, self.ai_feature_settings, self)
+            self.ai_settings_panel = ai_panel
+            sections.append(("AI 功能", ai_panel))
+            panel = (
+                self._compose_settings_sections(sections)
+                if len(sections) > 1
+                else ai_panel
+            )
             self._settings_tabs.removeTab(self._ai_tab_index)
             self._ai_tab_index = self._settings_tabs.insertTab(self._ai_tab_index, panel, "AI")
             self._ai_panel_loaded = True
         if hasattr(self, "ai_settings_panel"):
             self.ai_settings_panel.refresh_on_show()
 
-    def _build_memory_tab(self, memory_store: MemoryStore) -> QWidget:
+    def _build_memory_tab(
+        self,
+        memory_store: MemoryStore,
+        *,
+        embed: bool = False,
+    ) -> QWidget:
         tab = QWidget(self)
         _ = memory_store
 
@@ -1247,6 +1327,8 @@ class SettingsDialog(QDialog):
         self._show_memory_placeholder("正在加载长期记忆...")
         self._clear_memory_editor()
         self._load_memory_entries()
+        if embed:
+            return tab
         return wrap_scrollable(tab)
 
     def _load_memory_entries(self) -> None:
